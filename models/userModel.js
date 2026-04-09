@@ -338,7 +338,7 @@ const User = {
 
         // Add mandatory fields if not present
         if (!userData.password) {
-            userData.password = 'password123';
+            userData.password = 'acte@123';
         }
 
         // Hash password

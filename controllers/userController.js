@@ -683,7 +683,7 @@ const bulkUploadUsers = async (req, res) => {
 
                 // Auto-set company
                 userData.company = req.user.company;
-                userData.password = 'password123';
+                userData.password = 'acte@123';
                 if (salary_structure_id) {
                     userData.salary_structure_id = salary_structure_id;
                 }

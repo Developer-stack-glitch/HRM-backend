@@ -48,7 +48,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // Static folder for uploads
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
 // Database connection test
