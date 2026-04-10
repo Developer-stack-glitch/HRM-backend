@@ -413,6 +413,11 @@ const User = {
             employmentTypes: empTypes.map(row => ({ id: row.label.toLowerCase(), label: row.label })),
             workModes: workModes.map(row => ({ id: row.label.toLowerCase(), label: row.label }))
         };
+    },
+
+    countByRole: async (role) => {
+        const [rows] = await pool.execute('SELECT COUNT(*) as total FROM users WHERE role = ?', [role]);
+        return rows[0].total;
     }
 };
 

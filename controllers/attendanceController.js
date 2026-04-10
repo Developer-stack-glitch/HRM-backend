@@ -9,6 +9,35 @@ const puppeteer = require('puppeteer');
 const xml2js = require('xml2js');
 const ExcelJS = require('exceljs');
 
+const getISTDate = () => {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+};
+
+const getISTTime = () => {
+    return new Date().toLocaleTimeString('en-GB', { 
+        timeZone: 'Asia/Kolkata', 
+        hour12: false, 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit' 
+    });
+};
+
+const getISTHoursAndMinutes = () => {
+    const istStr = new Date().toLocaleTimeString('en-GB', { 
+        timeZone: 'Asia/Kolkata', 
+        hour12: false, 
+        hour: '2-digit', 
+        minute: '2-digit' 
+    });
+    const [h, m] = istStr.split(':').map(Number);
+    return { h, m };
+};
+
+const getISTDateTime = () => {
+    return `${getISTDate()} ${getISTTime()}`;
+};
+
 const calculateTimeDiff = (time1, time2, type = 'late_in') => {
     if (!time1 || !time2) return "00:00:00";
 
@@ -214,9 +243,9 @@ const enrichAttendanceRecord = async (record, shift, permissions = []) => {
     }
 
     const recordDateStr = formatDate(date);
-    const now = new Date();
-    const todayStr = formatDate(now);
-    const currentTimeMins = now.getHours() * 60 + now.getMinutes();
+    const todayStr = getISTDate();
+    const { h: curH, m: curM } = getISTHoursAndMinutes();
+    const currentTimeMins = curH * 60 + curM;
 
     let isDayComplete = false;
     if (recordDateStr < todayStr) {
@@ -436,11 +465,8 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
             const key = `${user.id}_${dateStr}`;
 
             if (!combinedData[key]) {
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                const dCopy = new Date(d);
-                dCopy.setHours(0, 0, 0, 0);
-                const isFuture = dCopy > today;
+                const todayStr = getISTDate();
+                const isFuture = dateStr > todayStr;
 
                 combinedData[key] = {
                     id: `gen_${user.id}_${dateStr}`,
@@ -570,8 +596,8 @@ const fetchBiometricLogsInternal = async (fromDate, toDate) => {
             return [];
         }
 
-        const fDate = fromDate ? `${fromDate} 00:00` : `${new Date().toISOString().split('T')[0]} 00:00`;
-        const tDate = toDate ? `${toDate} 23:59` : `${new Date().toISOString().split('T')[0]} 23:59`;
+        const fDate = fromDate ? `${fromDate} 00:00` : `${getISTDate()} 00:00`;
+        const tDate = toDate ? `${toDate} 23:59` : `${getISTDate()} 23:59`;
 
         const logPromises = devices.map(async (device) => {
             try {
@@ -744,7 +770,7 @@ exports.saveAttendance = async (req, res) => {
 exports.getTodayStatus = async (req, res) => {
     try {
         const { userId } = req.params;
-        const date = new Date().toISOString().split('T')[0];
+        const date = getISTDate();
 
         // Fetch user shift info
         const [users] = await pool.execute('SELECT shift FROM users WHERE id = ?', [userId || null]);
@@ -866,8 +892,8 @@ exports.getTodayStatus = async (req, res) => {
 exports.webClockIn = async (req, res) => {
     try {
         const { user_id, latitude, longitude, location } = req.body;
-        const date = new Date().toISOString().split('T')[0];
-        const web_punch_in = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const date = getISTDate();
+        const web_punch_in = getISTTime();
 
         const [users] = await pool.execute('SELECT shift, biometric_id, emp_id, web_clock_in_allowed FROM users WHERE id = ?', [user_id || null]);
         if (users.length === 0) return res.status(404).json({ message: 'User not found' });
@@ -964,8 +990,8 @@ exports.webClockIn = async (req, res) => {
 exports.webClockOut = async (req, res) => {
     try {
         const { user_id, latitude, longitude, location } = req.body;
-        const date = new Date().toISOString().split('T')[0];
-        const web_punch_out = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const date = getISTDate();
+        const web_punch_out = getISTTime();
 
         const [attendance] = await pool.execute(
             'SELECT * FROM attendance WHERE user_id = ? AND date = ?',
@@ -1026,8 +1052,8 @@ exports.webClockOut = async (req, res) => {
 exports.startBreak = async (req, res) => {
     try {
         const { user_id, latitude, longitude, location } = req.body;
-        const date = new Date().toISOString().split('T')[0];
-        const break_start = new Date();
+        const date = getISTDate();
+        const break_start = getISTDateTime();
 
         const [attendance] = await pool.execute(
             'SELECT id FROM attendance WHERE user_id = ? AND date = ?',
@@ -1064,8 +1090,9 @@ exports.startBreak = async (req, res) => {
 exports.endBreak = async (req, res) => {
     try {
         const { user_id } = req.body;
-        const date = new Date().toISOString().split('T')[0];
-        const break_end = new Date();
+        const date = getISTDate();
+        const break_end_str = getISTDateTime();
+        const break_end = new Date(); // Use current JS Date for diff
 
         const [attendance] = await pool.execute(
             'SELECT id FROM attendance WHERE user_id = ? AND date = ?',
@@ -1097,7 +1124,7 @@ exports.endBreak = async (req, res) => {
 
         await pool.execute(
             'UPDATE attendance_breaks SET break_end = ?, break_duration = ? WHERE id = ?',
-            [break_end, durationStr, breakRecord.id || null]
+            [break_end_str, durationStr, breakRecord.id || null]
         );
 
         const [allBreaks] = await pool.execute(
@@ -1223,9 +1250,9 @@ const processBiometricLogs = async (logs) => {
         let status = "Present";
 
         const recordDateStr = group.date;
-        const now = new Date();
-        const todayStr = formatDate(now);
-        const currentTimeMins = now.getHours() * 60 + now.getMinutes();
+        const todayStr = getISTDate();
+        const { h: curH, m: curM } = getISTHoursAndMinutes();
+        const currentTimeMins = curH * 60 + curM;
 
         let isDayComplete = false;
         if (recordDateStr < todayStr) {
@@ -1639,7 +1666,7 @@ exports.generateAttendanceReport = async (req, res) => {
             <body>
                 <div class="header">
                     <h1>${title}</h1>
-                    <p>Report generated on: ${new Date().toLocaleString()}</p>
+                    <p>Report generated on: ${getISTDate()} ${getISTTime()}</p>
                 </div>
                 <div class="report-info">
                     <span>Date Range: ${startDate} to ${endDate}</span>
