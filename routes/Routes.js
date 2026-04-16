@@ -31,6 +31,7 @@ const complianceSettingsController = require('../controllers/complianceSettingsC
 const salaryFormulaController = require('../controllers/salaryFormulaController');
 const rolePermissionController = require('../controllers/rolePermissionController');
 const notificationController = require('../controllers/notificationController');
+const regularisationController = require('../controllers/regularisationController');
 
 // --- Upload Configurations ---
 const assetUploadFields = [
@@ -116,6 +117,12 @@ router.put('/attendance/policy-rules/:id', protect, attendancePolicyController.u
 router.delete('/attendance/policy-rules/:id', protect, attendancePolicyController.deleteRule);
 router.get('/attendance/company-policy/:companyId', protect, companyPolicyController.getCompanyPolicy);
 router.post('/attendance/company-policy', protect, companyPolicyController.saveCompanyPolicy);
+
+// --- Regularisation Routes ---
+router.post('/regularisations/', protect, regularisationController.createRequest);
+router.get('/regularisations/', protect, regularisationController.getRequests);
+router.get('/regularisations/counts', protect, regularisationController.getCounts);
+router.put('/regularisations/:id/status', protect, regularisationController.updateStatus);
 
 // --- Holiday Routes ---
 router.get('/holidays/', protect, holidayController.getHolidays);

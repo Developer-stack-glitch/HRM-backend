@@ -360,7 +360,8 @@ const downloadBulkTemplate = async (req, res) => {
             'ESI No', 'PF No', 'Aadhar No', 'PAN No', 'Bank A/C No', 'IFSC Code', 'UAN',
             'Blood Group', 'Mother Tongue', 'Father/Spouse Name', 'Father/Spouse Contact',
             'Mother Name', 'Mother Contact', 'Temp Address', 'Perm Address',
-            'Year Gross Salary', 'Has Work Experience? (Yes/No)', 'Allow Web Clock-In (Yes/No)', 'Team Lead (Yes/No)'
+            'Year Gross Salary', 'Has Work Experience? (Yes/No)', 'Allow Web Clock-In (Yes/No)', 'Team Lead (Yes/No)',
+            'Reporting Manager ID'
         ];
 
         const componentColumns = components.map(c => c.name);
@@ -463,7 +464,7 @@ const downloadReferenceIds = async (req, res) => {
             cell.alignment = { vertical: 'middle', horizontal: 'center' };
         });
 
-        const [departments, designations, branches, shifts, structures, roles, employmentTypes, workLocations] = await Promise.all([
+        const [departments, designations, branches, shifts, structures, roles, employmentTypes, workLocations, users] = await Promise.all([
             Organization.getAllDepartments(),
             Organization.getAllDesignations(),
             Organization.getAllBranches(),
@@ -471,7 +472,8 @@ const downloadReferenceIds = async (req, res) => {
             SalaryStructure.getAll(req.user.company),
             pool.execute('SELECT id, role FROM role_permissions').then(([rows]) => rows),
             Organization.getAllEmploymentTypes(),
-            Organization.getAllWorkLocations()
+            Organization.getAllWorkLocations(),
+            pool.execute('SELECT id, employee_name as name FROM users WHERE role != "superadmin"').then(([rows]) => rows)
         ]);
 
         const addRows = (type, data, nameKey = 'name') => {
@@ -514,6 +516,7 @@ const downloadReferenceIds = async (req, res) => {
         addRows('Role ID', roles);
         addRows('Employment Type', employmentTypes);
         addRows('Work Location', workLocations);
+        addRows('Reporting Manager', users);
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', 'attachment; filename="User_Assignment_Reference_IDs.xlsx"');
@@ -633,7 +636,8 @@ const bulkUploadUsers = async (req, res) => {
             'Year Gross Salary': 'year_gross_salary',
             'Has Work Experience? (Yes/No)': 'is_experienced',
             'Allow Web Clock-In (Yes/No)': 'web_clock_in_allowed',
-            'Team Lead (Yes/No)': 'team_lead'
+            'Team Lead (Yes/No)': 'team_lead',
+            'Reporting Manager ID': 'reporting_manager'
         };
 
         const summary = { success: 0, failed: 0, errors: [] };

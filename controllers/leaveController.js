@@ -22,8 +22,22 @@ const createLeave = async (req, res) => {
         // Send Notification
         const io = req.app.get('socketio');
         const { sendNotification } = require('../utils/notificationHelper');
-        const userName = req.user.name || req.user.employee_name || 'Employee';
+        const { User } = require('../models/userModel');
+        const userData = await User.findById(employee_id);
+        const userName = userData?.employee_name || 'Employee';
 
+        // 1. Send to Reporting Manager if exists
+        if (userData && userData.reporting_manager) {
+            await sendNotification(io, {
+                user_id: userData.reporting_manager,
+                type: 'request',
+                title: 'New Leave Request',
+                message: `${userName} has requested ${leave_type} from ${start_date} to ${end_date}`,
+                extra_data: { leave_id: leaveId, type: 'leave_request' }
+            });
+        }
+
+        // 2. Send to Admin/Superadmin
         await sendNotification(io, {
             role: 'admin',
             type: 'request',
@@ -41,7 +55,13 @@ const createLeave = async (req, res) => {
 
 const getLeaves = async (req, res) => {
     try {
-        const leaves = await Leave.getAll(req.query);
+        const filters = { ...req.query };
+        if (req.user.role === 'employee') {
+            filters.reporting_manager = req.user.id;
+            filters.personal_user_id = req.user.id;
+        }
+
+        const leaves = await Leave.getAll(filters);
         res.status(200).json(leaves);
     } catch (error) {
         console.error('Error fetching leaves:', error);

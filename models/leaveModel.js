@@ -63,12 +63,14 @@ class Leave {
             startDate,
             endDate,
             departments,
-            leave_types
+            leave_types,
+            reporting_manager,
+            personal_user_id
         } = filters;
         const offset = (page - 1) * limit;
 
         let query = `
-            SELECT l.*, u.employee_name, u.emp_id, u.designation, u.team_lead, u.role as employee_role,
+            SELECT l.*, u.employee_name, u.emp_id, u.designation, u.team_lead, u.role as employee_role, u.reporting_manager,
                    d.name as department_name, b.name as branch_name,
                    a.employee_name as approved_by_name
             FROM leaves l 
@@ -93,13 +95,23 @@ class Leave {
                 params.push(...statusArray);
             }
         }
-        if (employee_id) {
-            conditions.push('l.employee_id = ?');
-            params.push(employee_id);
+        const managerConditions = [];
+        const managerParams = [];
+        if (reporting_manager && personal_user_id) {
+            managerConditions.push('u.reporting_manager = ? OR l.employee_id = ?');
+            managerParams.push(reporting_manager, personal_user_id);
         }
         if (team_lead_id) {
-            conditions.push('l.team_lead_id = ?');
-            params.push(team_lead_id);
+            managerConditions.push('l.team_lead_id = ?');
+            managerParams.push(team_lead_id);
+        }
+
+        if (managerConditions.length > 0) {
+            conditions.push(`(${managerConditions.join(' OR ')})`);
+            params.push(...managerParams);
+        } else if (employee_id) {
+            conditions.push('l.employee_id = ?');
+            params.push(employee_id);
         }
         if (search) {
             const searchPattern = `%${search}%`;
@@ -163,13 +175,23 @@ class Leave {
         const countConditions = ["u.role != 'superadmin'"];
         const countQueryParams = [];
 
-        if (employee_id) {
-            countConditions.push('l.employee_id = ?');
-            countQueryParams.push(employee_id);
+        const managerCountConditions = [];
+        const managerCountParams = [];
+        if (reporting_manager && personal_user_id) {
+            managerCountConditions.push('u.reporting_manager = ? OR l.employee_id = ?');
+            managerCountParams.push(reporting_manager, personal_user_id);
         }
         if (team_lead_id) {
-            countConditions.push('l.team_lead_id = ?');
-            countQueryParams.push(team_lead_id);
+            managerCountConditions.push('l.team_lead_id = ?');
+            managerCountParams.push(team_lead_id);
+        }
+
+        if (managerCountConditions.length > 0) {
+            countConditions.push(`(${managerCountConditions.join(' OR ')})`);
+            countQueryParams.push(...managerCountParams);
+        } else if (employee_id) {
+            countConditions.push('l.employee_id = ?');
+            countQueryParams.push(employee_id);
         }
         if (search) {
             const searchPattern = `%${search}%`;
