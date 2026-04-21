@@ -8,6 +8,7 @@ const axios = require('axios');
 const puppeteer = require('puppeteer');
 const xml2js = require('xml2js');
 const ExcelJS = require('exceljs');
+const ShiftRoster = require('../models/shiftRosterModel');
 
 const getISTDate = () => {
     return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -378,6 +379,14 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     // Fetch biometric logs for the same range
     const logs = await fetchBiometricLogsInternal(startDate, endDate);
 
+    // Fetch shift roster for overrides
+    const roster = await ShiftRoster.getRoster(startDate, endDate);
+    const rosterMap = {};
+    roster.forEach(r => {
+        const dateStr = formatDate(r.roster_date);
+        rosterMap[`${r.user_id}_${dateStr}`] = r;
+    });
+
     let finalAttendance = [];
 
     const { User } = require('../models/userModel');
@@ -446,6 +455,14 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
                     employment_type: user.employment_type,
                     work_mode: user.work_location
                 };
+
+                // Apply Shift Roster Override
+                const rosterEntry = rosterMap[key];
+                if (rosterEntry) {
+                    combinedData[key].shift_id = rosterEntry.shift_id;
+                    combinedData[key].shift = rosterEntry.shift_name;
+                    combinedData[key].is_rostered = true;
+                }
             }
             combinedData[key].punches.push(log.time);
             combinedData[key].is_biometric = true;
@@ -487,6 +504,14 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
                     employment_type: user.employment_type,
                     work_mode: user.work_location
                 };
+
+                // Apply Shift Roster Override
+                const rosterEntry = rosterMap[key];
+                if (rosterEntry) {
+                    combinedData[key].shift_id = rosterEntry.shift_id;
+                    combinedData[key].shift = rosterEntry.shift_name;
+                    combinedData[key].is_rostered = true;
+                }
             }
             d.setDate(d.getDate() + 1);
         }

@@ -32,6 +32,7 @@ const salaryFormulaController = require('../controllers/salaryFormulaController'
 const rolePermissionController = require('../controllers/rolePermissionController');
 const notificationController = require('../controllers/notificationController');
 const regularisationController = require('../controllers/regularisationController');
+const shiftRosterController = require('../controllers/shiftRosterController');
 
 // --- Upload Configurations ---
 const assetUploadFields = [
@@ -123,6 +124,12 @@ router.post('/regularisations/', protect, regularisationController.createRequest
 router.get('/regularisations/', protect, regularisationController.getRequests);
 router.get('/regularisations/counts', protect, regularisationController.getCounts);
 router.put('/regularisations/:id/status', protect, regularisationController.updateStatus);
+
+// --- Shift Roster Routes ---
+router.get('/shift-roster', protect, shiftRosterController.getRoster);
+router.post('/shift-roster/assign', protect, shiftRosterController.assignShift);
+router.post('/shift-roster/bulk-assign', protect, shiftRosterController.bulkAssign);
+router.delete('/shift-roster/:id', protect, shiftRosterController.deleteAssignment);
 
 // --- Holiday Routes ---
 router.get('/holidays/', protect, holidayController.getHolidays);

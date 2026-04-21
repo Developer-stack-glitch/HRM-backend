@@ -99,7 +99,9 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 web_clock_in_allowed TINYINT(1) DEFAULT 1,
                 reset_token VARCHAR(255) DEFAULT NULL,
                 reset_token_expiry DATETIME DEFAULT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                reporting_manager INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (reporting_manager) REFERENCES users(id) ON DELETE SET NULL
             )
         `);
 
@@ -141,6 +143,19 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 start_time TIME NOT NULL,
                 end_time TIME NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await tenantPool.execute(`
+            CREATE TABLE IF NOT EXISTS shift_roster (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                shift_id INT NOT NULL,
+                roster_date DATE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_user_date (user_id, roster_date),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (shift_id) REFERENCES shifts(id) ON DELETE CASCADE
             )
         `);
 
@@ -222,6 +237,24 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 location TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (attendance_id) REFERENCES attendance(id) ON DELETE CASCADE
+            )
+        `);
+
+        await tenantPool.execute(`
+            CREATE TABLE IF NOT EXISTS regularisations (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                date DATE NOT NULL,
+                check_in TIME,
+                check_out TIME,
+                reason TEXT,
+                status ENUM('Pending', 'Approved', 'Rejected') DEFAULT 'Pending',
+                approved_by INT,
+                rejection_reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL
             )
         `);
 

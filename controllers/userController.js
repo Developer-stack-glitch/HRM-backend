@@ -33,9 +33,9 @@ const createUser = async (req, res) => {
                 const dbKey = `document_${baseName}`;
 
                 if (files.length > 1 || key === 'payslips') {
-                    userData[dbKey] = JSON.stringify(files.map(f => f.path));
+                    userData[dbKey] = JSON.stringify(files.map(f => f.path.replace(/\\/g, '/')));
                 } else {
-                    userData[dbKey] = files[0].path;
+                    userData[dbKey] = files[0].path.replace(/\\/g, '/');
                 }
             });
         }
@@ -256,9 +256,9 @@ const updateUser = async (req, res) => {
                     // Merge new payslips with existing ones
                     const existing = Array.isArray(userData[dbKey]) ? userData[dbKey] :
                         (typeof userData[dbKey] === 'string' && userData[dbKey].startsWith('[') ? JSON.parse(userData[dbKey]) : []);
-                    userData[dbKey] = JSON.stringify([...existing, ...newPaths]);
+                    userData[dbKey] = JSON.stringify([...existing, ...newPaths].map(p => p.replace(/\\/g, '/')));
                 } else {
-                    userData[dbKey] = newPaths[0];
+                    userData[dbKey] = newPaths[0].replace(/\\/g, '/');
                 }
             });
         }
