@@ -17,6 +17,11 @@ const createUser = async (req, res) => {
                 if (userData[key] === 'true') userData[key] = 1;
                 if (userData[key] === 'false') userData[key] = 0;
             }
+
+            // Convert empty strings to null for numeric/ID fields
+            if (userData[key] === '' || userData[key] === 'null' || userData[key] === 'undefined') {
+                userData[key] = null;
+            }
         });
 
         // Automatically set company from logged in user (not chooseable)
@@ -49,7 +54,7 @@ const createUser = async (req, res) => {
         }
 
         // 3. Validate mandatory fields
-        const mandatoryFields = ['department', 'designation', 'branch', 'shift'];
+        const mandatoryFields = ['department', 'designation', 'branch', 'shift', 'reporting_manager'];
         for (const field of mandatoryFields) {
             if (!userData[field]) {
                 const label = field.charAt(0).toUpperCase() + field.slice(1);
@@ -90,14 +95,36 @@ const createUser = async (req, res) => {
     } catch (error) {
         console.error('Error creating user:', error);
         let message = 'Error creating user';
+        let statusCode = 500;
+
         if (error.code === 'ER_DUP_ENTRY') {
-            if (error.message.includes('email')) message = 'This email address is already registered please change the email address.';
+            statusCode = 400;
+            if (error.message.includes('email')) message = 'This email address is already registered. Please use a different email.';
             else if (error.message.includes('emp_id')) message = 'This Employee ID is already in use.';
             else if (error.message.includes('biometric_id')) message = 'This Biometric ID is already in use.';
-            else message = 'The record already exists.';
-            return res.status(400).json({ message, error: error.message });
+            else message = 'A record with this information already exists.';
+        } else if (error.code === 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD' || error.code === 'ER_WRONG_VALUE_COUNT_ON_ROW') {
+            statusCode = 400;
+            message = 'Invalid data provided for one or more fields. Please check your inputs.';
+        } else if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.code === 'ER_NO_REFERENCED_ROW') {
+            statusCode = 400;
+            message = 'One of the selected options (Department, Role, etc.) is invalid or no longer exists.';
+        } else if (error.code === 'ER_DATA_TOO_LONG') {
+            statusCode = 400;
+            message = 'One of the fields contains too much information. Please shorten your input.';
+        } else if (error.message.includes('Incorrect integer value')) {
+            statusCode = 400;
+            message = 'A numeric field received an invalid value. Please ensure all selections are correct.';
+        } else {
+            // For unmapped errors, use the actual error message
+            message = error.message;
         }
-        res.status(500).json({ message, error: error.message });
+
+        res.status(statusCode).json({ 
+            message, 
+            error: error.message,
+            code: error.code
+        });
     }
 };
 
@@ -222,6 +249,11 @@ const updateUser = async (req, res) => {
                 if (userData[key] === 'true') userData[key] = 1;
                 if (userData[key] === 'false') userData[key] = 0;
             }
+
+            // Convert empty strings to null for numeric/ID fields
+            if (userData[key] === '' || userData[key] === 'null' || userData[key] === 'undefined') {
+                userData[key] = null;
+            }
         });
 
         // Handle existing files and new uploads
@@ -272,7 +304,7 @@ const updateUser = async (req, res) => {
         }
 
         // 3. Validate mandatory fields (only if present in request, to allow partial updates like password/photo)
-        const mandatoryFields = ['department', 'designation', 'branch', 'shift'];
+        const mandatoryFields = ['department', 'designation', 'branch', 'shift', 'reporting_manager'];
         for (const field of mandatoryFields) {
             if (Object.keys(userData).includes(field) && !userData[field]) {
                 const label = field.charAt(0).toUpperCase() + field.slice(1);
@@ -316,14 +348,32 @@ const updateUser = async (req, res) => {
     } catch (error) {
         console.error('Error updating user:', error);
         let message = 'Error updating user';
+        let statusCode = 500;
+
         if (error.code === 'ER_DUP_ENTRY') {
+            statusCode = 400;
             if (error.message.includes('email')) message = 'This email address is already registered.';
             else if (error.message.includes('emp_id')) message = 'This Employee ID is already in use.';
             else if (error.message.includes('biometric_id')) message = 'This Biometric ID is already in use.';
             else message = 'The record already exists.';
-            return res.status(400).json({ message, error: error.message });
+        } else if (error.code === 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD') {
+            statusCode = 400;
+            message = 'Invalid data provided. Please check numeric fields and dates.';
+        } else if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+            statusCode = 400;
+            message = 'Invalid selection for one of the related fields (e.g. Department, Role).';
+        } else if (error.message.includes('Incorrect integer value')) {
+            statusCode = 400;
+            message = 'Invalid numeric value provided for a field.';
+        } else {
+            message = error.message;
         }
-        res.status(500).json({ message, error: error.message });
+
+        res.status(statusCode).json({ 
+            message, 
+            error: error.message,
+            code: error.code
+        });
     }
 };
 
@@ -691,7 +741,7 @@ const bulkUploadUsers = async (req, res) => {
                 if (salary_structure_id) {
                     userData.salary_structure_id = salary_structure_id;
                 }
-                if (!userData.employee_name || !userData.off_mail_id) {
+                if (!userData.employee_name || !userData.off_mail_id || !userData.department || !userData.designation || !userData.branch || !userData.shift || !userData.reporting_manager) {
                     throw new Error(`Missing mandatory fields for row: ${JSON.stringify(rowData)}`);
                 }
 
