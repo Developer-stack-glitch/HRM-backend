@@ -9,6 +9,8 @@ const puppeteer = require('puppeteer');
 const xml2js = require('xml2js');
 const ExcelJS = require('exceljs');
 const ShiftRoster = require('../models/shiftRosterModel');
+const Holiday = require('../models/holidayModel');
+
 
 const getISTDate = () => {
     return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -162,7 +164,18 @@ const getShiftTimes = async (shiftInput) => {
     return { start: shiftStart, end: shiftEnd };
 };
 
+const getHolidayDetail = (date, holidays, companyId) => {
+    if (!holidays || !Array.isArray(holidays)) return null;
+    const dateStr = formatDate(date);
+    return holidays.find(h => 
+        formatDate(h.date) === dateStr && 
+        (!h.company_id || String(h.company_id) === String(companyId))
+    ) || null;
+};
+
+
 const isWeekOff = async (userId, companyId, date) => {
+
     // 1. Check for User-specific Week Off
     const userRules = await WeekOff.getByUserId(userId);
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -196,7 +209,8 @@ const isWeekOff = async (userId, companyId, date) => {
     return new Date(date).getDay() === 0;
 };
 
-const enrichAttendanceRecord = async (record, shift, permissions = []) => {
+const enrichAttendanceRecord = async (record, shift, permissions = [], holidays = []) => {
+
     const { start: shiftStart, end: shiftEnd } = await getShiftTimes(shift || record.shift);
 
     let { punch_in, punch_out, total_hours, status, date, user_id, company } = record;
@@ -206,6 +220,10 @@ const enrichAttendanceRecord = async (record, shift, permissions = []) => {
     let shift_hours = "0.0";
 
     const is_week_off = await isWeekOff(user_id, company, date);
+    const holidayDetail = getHolidayDetail(date, holidays, company);
+    const is_holiday = !!holidayDetail;
+
+
 
     let shiftDurationMins = 0;
     if (shiftStart && shiftEnd) {
@@ -265,10 +283,19 @@ const enrichAttendanceRecord = async (record, shift, permissions = []) => {
 
         if (isPunchInMissing && isDayComplete) {
             // Never came in at all
-            status = is_week_off ? 'Week Off' : 'Absent';
-            working_day_value = 0.0;
+            if (is_holiday) {
+                status = 'Holiday';
+                working_day_value = 1.0;
+            } else if (is_week_off) {
+                status = 'Week Off';
+                working_day_value = 1.0;
+            } else {
+                status = 'Absent';
+                working_day_value = 0.0;
+            }
             total_hours = "00:00";
         } else if (!isPunchInMissing) {
+
             let totalPenalty = 0;
 
             // Calculate Late In Penalty
@@ -289,10 +316,19 @@ const enrichAttendanceRecord = async (record, shift, permissions = []) => {
             } else {
                 // No punch out yet
                 if (isDayComplete) {
-                    status = is_week_off ? 'Week Off' : 'Incomplete';
-                    working_day_value = is_week_off ? 1.0 : 0.0; // Forgot to punch out = 0.0 value
+                    if (is_holiday) {
+                        status = 'Holiday';
+                        working_day_value = 1.0;
+                    } else if (is_week_off) {
+                        status = 'Week Off';
+                        working_day_value = 1.0;
+                    } else {
+                        status = 'Incomplete';
+                        working_day_value = 0.0; // Forgot to punch out = 0.0 value
+                    }
                     total_hours = "00:00";
                 } else {
+
                     status = 'Present';
                 }
             }
@@ -310,15 +346,18 @@ const enrichAttendanceRecord = async (record, shift, permissions = []) => {
     } else if (status === 'Holiday' || status === 'Week Off') {
         working_day_value = 1.0;
     } else if (status === 'Absent' || !status) {
-        if (is_week_off) {
+        if (is_holiday) {
+            status = 'Holiday';
+            working_day_value = 1.0;
+        } else if (is_week_off) {
             status = 'Week Off';
             working_day_value = 1.0;
         } else {
-            // Check if it's a holiday - we need to fetch holidays here or pass them in
-            // For now, let's at least fix the Week Off issue which is confirmed
             working_day_value = 0.0;
+            status = 'Absent';
         }
     }
+
 
     return {
         ...record,
@@ -329,6 +368,10 @@ const enrichAttendanceRecord = async (record, shift, permissions = []) => {
         working_day_value: parseFloat(working_day_value.toFixed(2)),
         shift_hours,
         is_week_off,
+        is_holiday,
+        holiday_name: holidayDetail ? holidayDetail.name : null,
+
+
         permission_deduction: permissionDeduction.toFixed(2),
         permissions: dayPermissions.map(p => ({
             id: p.id,
@@ -378,6 +421,10 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
 
     // Fetch biometric logs for the same range
     const logs = await fetchBiometricLogsInternal(startDate, endDate);
+
+    // Fetch all holidays
+    const [allHolidays] = await pool.execute("SELECT * FROM holidays");
+
 
     // Fetch shift roster for overrides
     const roster = await ShiftRoster.getRoster(startDate, endDate);
@@ -548,8 +595,9 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
             early_punch_out,
             total_hours,
             status: group.status
-        }, group.shift, permissions);
+        }, group.shift, permissions, allHolidays);
     }));
+
 
     finalAttendance = consolidated;
 
@@ -607,7 +655,8 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
         }
     });
 
-    const enrichedLeaves = await Promise.all(leaveOnlyEntries.map(e => enrichAttendanceRecord(e, e.shift, allLeaves)));
+    const enrichedLeaves = await Promise.all(leaveOnlyEntries.map(e => enrichAttendanceRecord(e, e.shift, allLeaves, allHolidays)));
+
     finalAttendance = [...finalAttendance, ...enrichedLeaves];
 
     return finalAttendance;
