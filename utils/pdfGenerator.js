@@ -29,7 +29,7 @@ const generatePayslipPDF = async (data) => {
         logoHtml = `<div style="font-weight: bold; font-size: 13px; color: #1f2937; text-transform: uppercase;">${company.name}</div>`;
     }
 
-    const monthYear = new Date(payrollRun.period_start).toLocaleString('default', { month: 'long', year: 'numeric' }).toUpperCase();
+    const monthYear = (payrollRun.payroll_month || new Date(payrollRun.period_start).toLocaleString('default', { month: 'long', year: 'numeric' })).toUpperCase();
 
     // Split address
     const addressLines = (company.address || '').split('\n').filter(l => l.trim());
@@ -67,6 +67,7 @@ const generatePayslipPDF = async (data) => {
             }
             .contact-info p {
                 margin: 0;
+                text-transform: capitalize;
             }
             .title {
                 text-align: center;
@@ -144,8 +145,8 @@ const generatePayslipPDF = async (data) => {
             </div>
             <div class="contact-info">
                 ${addressLines.map(line => `<p>${line}</p>`).join('')}
-                <p>PHONE: ${company.phone || 'N/A'}</p>
-                <p>E-MAIL:- ${company.email || 'N/A'}</p>
+                <p>Phone: ${company.phone || 'N/A'}</p>
+                <p>Email:- ${company.email || 'N/A'}</p>
                 <p>${company.website || ''}</p>
             </div>
         </div>
@@ -202,61 +203,55 @@ const generatePayslipPDF = async (data) => {
             </thead>
             <tbody>
                 ${(() => {
-                    const earnings = { ...(employee.earnings_breakdown || {}) };
-                    const deductions = { ...(employee.deductions_breakdown || {}) };
+            const earningsRaw = { ...(employee.earnings_breakdown || {}) };
+            const deductionsRaw = { ...(employee.deductions_breakdown || {}) };
 
-                    // Always ensure key deduction fields are present if they have values
-                    if (employee.lop > 0) deductions['LOSS OF PAY'] = employee.lop;
-                    if (employee.epf && !deductions['PF'] && !deductions['EPF']) deductions['PF'] = employee.epf;
-                    if (employee.esi && !deductions['ESI']) deductions['ESI'] = employee.esi;
-                    if (employee.pt && !deductions['PT']) deductions['PT'] = employee.pt;
-                    if (employee.it && !deductions['IT'] && !deductions['Income Tax']) deductions['IT'] = employee.it;
-                    if (employee.vpf && !deductions['VPF']) deductions['VPF'] = employee.vpf;
+            // If earnings breakdown is empty, use legacy fields
+            if (Object.keys(earningsRaw).length === 0) {
+                earningsRaw['BASIC'] = employee.salary || 0;
+                earningsRaw['HRA'] = employee.hra || 0;
+                if (employee.conveyance) earningsRaw['CONVEYANCE'] = employee.conveyance;
+                if (employee.medical) earningsRaw['MEDICAL REIM'] = employee.medical;
+                if (employee.special) earningsRaw['SPECIAL ALLOW'] = employee.special;
+                if (employee.travel) earningsRaw['TRAVEL ALLOW'] = employee.travel;
+                if (employee.perDiem) earningsRaw['PER DIEM ALLOW'] = employee.perDiem;
+            }
 
-                    // If earnings breakdown is empty, use legacy fields
-                    if (Object.keys(earnings).length === 0) {
-                        earnings['BASIC'] = employee.salary || 0;
-                        earnings['HRA'] = employee.hra || 0;
-                        if (employee.conveyance) earnings['CONVEYANCE'] = employee.conveyance;
-                        if (employee.medical) earnings['MEDICAL REIM'] = employee.medical;
-                        if (employee.special) earnings['SPECIAL ALLOW'] = employee.special;
-                        if (employee.travel) earnings['TRAVEL ALLOW'] = employee.travel;
-                        if (employee.perDiem) earnings['PER DIEM ALLOW'] = employee.perDiem;
-                        if (employee.variable) earnings['VARIABLE'] = employee.variable;
-                        if (employee.incentives) earnings['INCENTIVES'] = employee.incentives;
-                    }
+            // Build ordered arrays to match frontend
+            const earnings = [];
+            Object.entries(earningsRaw).forEach(([label, value]) => {
+                if (value !== 0) earnings.push({ label: label.toUpperCase(), value });
+            });
+            earnings.push({ label: 'GROSS', value: employee.gross || 0 });
+            earnings.push({ label: 'VARIABLE', value: employee.variable || 0 });
+            earnings.push({ label: 'BALANCE', value: 0 });
+            earnings.push({ label: 'INCENTIVES', value: employee.incentives || 0 });
 
-                    // Filter out 0 value items to keep it clean
-                    const earnKeys = Object.keys(earnings).filter(k => earnings[k] !== 0);
-                    const deductKeys = Object.keys(deductions).filter(k => deductions[k] !== 0);
-                    const maxRows = Math.max(earnKeys.length, deductKeys.length);
-                    
-                    let rowsHtml = '';
-                    for (let i = 0; i < maxRows; i++) {
-                        const eKey = earnKeys[i];
-                        const dKey = deductKeys[i];
-                        rowsHtml += `
+            const deductions = [];
+            Object.entries(deductionsRaw).forEach(([label, value]) => {
+                if (value !== 0) deductions.push({ label: label.toUpperCase(), value });
+            });
+            deductions.push({ label: 'LOP', value: employee.lop || 0 });
+            deductions.push({ label: 'NET', value: employee.net || 0 });
+
+            const maxRows = Math.max(earnings.length, deductions.length);
+
+            let rowsHtml = '';
+            for (let i = 0; i < maxRows; i++) {
+                const e = earnings[i] || { label: '', value: '' };
+                const d = deductions[i] || { label: '', value: '' };
+
+                rowsHtml += `
                             <tr>
-                                <td class="${eKey === 'GROSS' ? 'bold' : ''}">${eKey || ''}</td>
-                                <td class="text-right ${eKey === 'GROSS' ? 'bold' : ''}">${eKey ? formatCurrency(earnings[eKey]) : ''}</td>
-                                <td class="${dKey === 'NET' ? 'bold' : ''}">${dKey || ''}</td>
-                                <td class="text-right ${dKey === 'NET' ? 'bold' : ''}">${dKey ? formatCurrency(deductions[dKey]) : ''}</td>
+                                <td class="${e.label === 'GROSS' ? 'bold' : ''}">${e.label}</td>
+                                <td class="text-right ${e.label === 'GROSS' ? 'bold' : ''}">${e.label ? formatCurrency(e.value) : ''}</td>
+                                <td class="${d.label === 'NET' ? 'bold' : ''}">${d.label}</td>
+                                <td class="text-right ${d.label === 'NET' ? 'bold' : ''}">${d.label ? formatCurrency(d.value) : ''}</td>
                             </tr>
                         `;
-                    }
-                    return rowsHtml;
-                })()}
-                <tr>
-                    <td class="bold">GROSS EARNINGS</td>
-                    <td class="text-right bold">${formatCurrency(employee.gross)}</td>
-                    <td class="bold">TOTAL DEDUCTIONS</td>
-                    <td class="text-right bold">${formatCurrency(employee.deductions)}</td>
-                </tr>
-                <tr style="background-color: #f9fafb;">
-                    <td colspan="2"></td>
-                    <td class="bold" style="font-size: 13px;">NET PAY</td>
-                    <td class="text-right bold" style="font-size: 13px;">${formatCurrency(employee.net)}</td>
-                </tr>
+            }
+            return rowsHtml;
+        })()}
             </tbody>
         </table>
 

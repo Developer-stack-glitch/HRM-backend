@@ -519,6 +519,7 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 batch_allocation_id INT,
                 batch_name VARCHAR(255),
+                payroll_month VARCHAR(50),
                 pay_type VARCHAR(50) DEFAULT 'MONTHLY',
                 period_start DATE,
                 period_end DATE,

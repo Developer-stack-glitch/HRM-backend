@@ -33,6 +33,7 @@ const rolePermissionController = require('../controllers/rolePermissionControlle
 const notificationController = require('../controllers/notificationController');
 const regularisationController = require('../controllers/regularisationController');
 const shiftRosterController = require('../controllers/shiftRosterController');
+const incentiveController = require('../controllers/incentiveController');
 
 // --- Upload Configurations ---
 const assetUploadFields = [
@@ -203,6 +204,11 @@ router.get('/reimbursements/categories', protect, reimbursementController.getRei
 router.post('/reimbursements/', protect, upload.single('receipt'), reimbursementController.createReimbursement);
 router.put('/reimbursements/:id/status', protect, reimbursementController.updateClaimStatus);
 router.delete('/reimbursements/:id', protect, reimbursementController.deleteClaim);
+
+// --- Payroll Incentive (Addons) Routes ---
+router.post('/incentives/', protect, incentiveController.create);
+router.get('/incentives/', protect, incentiveController.getAll);
+router.delete('/incentives/:id', protect, incentiveController.delete);
 
 // --- Device Routes ---
 router.get('/devices/', deviceController.getAllDevices);

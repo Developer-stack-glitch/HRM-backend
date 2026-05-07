@@ -37,6 +37,7 @@ function formatDateStr(date) {
 const payrollRunController = {
     create: async (req, res) => {
         try {
+            console.log('Creating payroll run with data:', req.body);
             const data = { ...req.body };
 
             // Auto-calculate total_employees from batch allocation assignments
@@ -62,7 +63,7 @@ const payrollRunController = {
             // Dynamically set total_employees from batch allocation assignments
             const BatchAllocation = require('../models/salaryStructureModel');
             const enrichedRuns = await Promise.all(runs.map(async (run) => {
-                const [itemCount] = await pool.execute('SELECT COUNT(*) as count FROM payroll_items WHERE payroll_run_id = ?', [run.id || null]);
+                const [itemCount] = await pool.execute('SELECT COUNT(*) as count FROM payroll_items WHERE payroll_run_id = ?', [run.id]);
                 const processed = itemCount[0].count;
 
                 if (run.batch_allocation_id) {
@@ -136,11 +137,15 @@ const payrollRunController = {
         });
 
         const { getAttendanceDataInternal, isWeekOff } = require('./attendanceController');
+        const targetUserIds = employees.map(e => String(e.id));
 
-        // Get attendance in the payroll period (from both DB AND Biometric)
+        // Get attendance in the payroll period ONLY for the employees in this run to optimize performance
         const attendanceRecords = await getAttendanceDataInternal(
             formatDateStr(periodStart),
-            formatDateStr(periodEnd)
+            formatDateStr(periodEnd),
+            null,
+            'admin',
+            targetUserIds
         );
 
         const attendanceByUser = {};
@@ -175,6 +180,19 @@ const payrollRunController = {
         // Use shared formula evaluator
         const { getDefinitions, evaluateFormula } = require('../utils/formulaEvaluator');
         const definitions = await getDefinitions(companyId);
+
+        // Fetch Incentives (Addons) for this period
+        const [incentives] = await pool.execute(`
+            SELECT user_id, SUM(amount) as total_incentive
+            FROM payroll_incentives
+            WHERE payroll_date BETWEEN ? AND ?
+            GROUP BY user_id
+        `, [formatDateStr(periodStart), formatDateStr(periodEnd)]);
+
+        const incentiveMap = {};
+        incentives.forEach(inc => {
+            incentiveMap[inc.user_id] = parseFloat(inc.total_incentive) || 0;
+        });
 
         const payrollEmployees = await Promise.all(employees.map(async (emp) => {
             const structureId = emp.salary_structure_id || payrollRun.batch_allocation_id;
@@ -294,7 +312,9 @@ const payrollRunController = {
 
             const totalDeductions = Object.values(deductions).reduce((a, b) => a + b, 0);
             const totalDeductionsIncludingLOP = totalDeductions + lop;
-            const net = Math.max(0, monthlySalary - totalDeductionsIncludingLOP + (parseFloat(emp.variable) || 0) + (parseFloat(emp.travel_allowance) || 0));
+            
+            const incentiveAmount = incentiveMap[emp.id] || 0;
+            const net = Math.max(0, monthlySalary - totalDeductionsIncludingLOP + (parseFloat(emp.variable) || 0) + (parseFloat(emp.travel_allowance) || 0) + incentiveAmount);
 
             // Helper to get pro-rated value from breakdown (case-insensitive)
             const getCompValue = (compBreakdown, nameList) => {
@@ -333,7 +353,7 @@ const payrollRunController = {
                 medical: getCompValue(earnings, ['Medical', 'Medical Allowance', 'Medical Reimbursement', 'Medical Reim']),
                 special: getCompValue(earnings, ['Special Allowance', 'Special', 'Spl Allowance']),
                 perDiem: getCompValue(earnings, ['Per Diem', 'Per Diem Allowance']),
-                incentives: getCompValue(earnings, ['Incentive', 'Incentives']),
+                incentives: getCompValue(earnings, ['Incentive', 'Incentives']) + incentiveAmount,
                 other: getCompValue(earnings, ['Other', 'Other Allowance', 'Other Earnings']),
 
                 // Deductions (Legacy)
@@ -727,12 +747,12 @@ const payrollRunController = {
             await connection.beginTransaction();
 
             // 1. Get run details
-            const [runRows] = await connection.execute('SELECT * FROM payroll_runs WHERE id = ?', [id || null]);
+            const [runRows] = await connection.execute('SELECT * FROM payroll_runs WHERE id = ?', [id]);
             if (!runRows || runRows.length === 0) throw new Error('Run not found');
             const payrollRun = runRows[0];
-            if (payrollRun.status === 'Completed') throw new Error('Already finalized');
-
             // 2. Fetch users and calculate
+            // Note: We allow re-finalization (status === 'Completed') to support updates after mistakes.
+            // Existing items will be cleared and recreated in step 3.
             const BatchAllocation = require('../models/salaryStructureModel');
             let employees = await BatchAllocation.getAssignedUsers(payrollRun.batch_allocation_id);
             if (employees.length === 0) {
@@ -753,11 +773,11 @@ const payrollRunController = {
             const calculation = await payrollRunController.calculatePayrollInternal(payrollRun, employees);
 
             // 3. Clear existing items (if any re-finalization attempt)
-            await connection.execute('DELETE FROM payroll_items WHERE payroll_run_id = ?', [id || null]);
+            await connection.execute('DELETE FROM payroll_items WHERE payroll_run_id = ?', [id]);
 
             // 4. Save items
             // Get current holds
-            const [holdRows] = await connection.execute('SELECT user_id FROM payroll_holds WHERE payroll_run_id = ?', [id || null]);
+            const [holdRows] = await connection.execute('SELECT user_id FROM payroll_holds WHERE payroll_run_id = ?', [id]);
             const holdUserIds = new Set(holdRows.map(h => h.user_id));
 
             for (const emp of calculation.payrollEmployees) {
@@ -770,18 +790,18 @@ const payrollRunController = {
                         esi_deduction, pt_deduction, net_salary,
                         hra, conveyance, medical, special, other,
                         cl_used, permission_used, employer_epfo_deduction, variable_pay, travel_allowance_pay, per_diem,
-                        other_deductions,
+                        other_deductions, bonus_incentives,
                         earnings_breakdown, deductions_breakdown,
                         is_hold
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `, [
-                    id || null, emp.user_id || null, emp.name || null, emp.emp_id || null,
+                    id, emp.user_id, emp.name || null, emp.emp_id || null,
                     emp.department || null, emp.designation || null, emp.salary || 0, emp.paidDays || 0,
                     emp.absentDays || 0, emp.gross || 0, emp.lop || 0, emp.epf || 0,
                     emp.esi || 0, emp.pt || 0, emp.net || 0,
                     emp.hra || 0, emp.conveyance || 0, emp.medical || 0, emp.special || 0, emp.other || 0,
                     emp.cl_used || 0, emp.permission_used || 0, emp.employer_epfo || 0, emp.variable || 0, emp.travel || 0, emp.perDiem || 0,
-                    emp.other_deductions || 0,
+                    emp.other_deductions || 0, emp.incentives || 0,
                     JSON.stringify(emp.earnings_breakdown || {}),
                     JSON.stringify(emp.deductions_breakdown || {}),
                     isHold
@@ -796,7 +816,7 @@ const payrollRunController = {
                     processed_employees = ?,
                     total_employees = ?
                 WHERE id = ?
-            `, [calculation.totalAmount, calculation.payrollEmployees.length, calculation.payrollEmployees.length, id || null]);
+            `, [calculation.totalAmount, calculation.payrollEmployees.length, calculation.payrollEmployees.length, id]);
 
             await connection.commit();
 
@@ -825,7 +845,7 @@ const payrollRunController = {
             }
 
             try {
-                const monthName = new Date(payrollRun.period_start).toLocaleString('default', { month: 'long', year: 'numeric' });
+                const monthName = payrollRun.payroll_month || new Date(payrollRun.period_start).toLocaleString('default', { month: 'long', year: 'numeric' });
                 const subject = `Payslip for ${monthName} - ${emp.name}`;
 
                 // Generate PDF Buffer
@@ -838,7 +858,16 @@ const payrollRunController = {
                 await sendEmail({
                     to: emp.official_email,
                     subject,
-                    html: ``,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+                            <h2 style="color: #2563eb;">Payslip for ${monthName}</h2>
+                            <p>Dear ${emp.name},</p>
+                            <p>Please find attached your payslip for the month of <strong>${monthName}</strong>.</p>
+                            <br/>
+                            <p>Best Regards,</p>
+                            <p><strong>${company.name}</strong></p>
+                        </div>
+                    `,
                     attachments: [
                         {
                             filename: `Payslip_${emp.name.replace(/\s+/g, '_')}_${monthName.replace(/\s+/g, '_')}.pdf`,
@@ -879,7 +908,7 @@ const payrollRunController = {
 
             // 1. Get payroll item details
             const [itemRows] = await pool.execute(`
-                SELECT pi.*, pr.period_start, pr.period_end, pr.company_id
+                SELECT pi.*, pr.period_start, pr.period_end, pr.payroll_month, pr.company_id
                 FROM payroll_items pi
                 JOIN payroll_runs pr ON pi.payroll_run_id = pr.id
                 WHERE pi.id = ? AND (pi.user_id = ? OR ? = 'admin' OR ? = 'superadmin')
@@ -911,15 +940,17 @@ const payrollRunController = {
                     variable: item.variable_pay || 0,
                     employer_epfo: item.employer_epfo_deduction || 0,
                     paidDays: item.paid_days,
-                    absentDays: item.absent_days
+                    absentDays: item.absent_days,
+                    incentives: item.bonus_incentives || 0
                 },
                 payrollRun: {
                     period_start: item.period_start,
-                    period_end: item.period_end
+                    period_end: item.period_end,
+                    payroll_month: item.payroll_month
                 }
             });
 
-            const monthName = new Date(item.period_start).toLocaleString('default', { month: 'long', year: 'numeric' });
+            const monthName = item.payroll_month || new Date(item.period_start).toLocaleString('default', { month: 'long', year: 'numeric' });
             const filename = `Payslip_${item.employee_name.replace(/\s+/g, '_')}_${monthName.replace(/\s+/g, '_')}.pdf`;
 
             res.setHeader('Content-Type', 'application/pdf');

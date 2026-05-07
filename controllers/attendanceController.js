@@ -354,7 +354,7 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
             working_day_value = 1.0;
         } else {
             working_day_value = 0.0;
-            status = 'Absent';
+            status = recordDateStr > todayStr ? null : 'Absent';
         }
     }
 
@@ -383,6 +383,9 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
 };
 
 const getAttendanceDataInternal = async (startDate, endDate, userId = null, userRole = 'admin', targetUserIds = null) => {
+    // Ensure we have strings for dates
+    startDate = startDate || getISTDate();
+    endDate = endDate || getISTDate();
     let dbAttendance;
 
     if (startDate && endDate) {
@@ -777,32 +780,12 @@ exports.saveAttendance = async (req, res) => {
             [user_id || null, date || null]
         );
 
-        if (existing.length > 0) {
-            return res.status(400).json({
-                message: 'Attendance record already exists for this employee on this date.'
-            });
-        }
+        // Removed existing record check to allow overwriting/editing
 
         const [users] = await pool.execute('SELECT shift, biometric_id, emp_id FROM users WHERE id = ?', [user_id || null]);
         if (users.length === 0) return res.status(404).json({ message: 'User not found' });
 
         const userBioId = users[0].biometric_id || users[0].emp_id;
-
-        // Check biometric logs for restriction
-        const logs = await fetchBiometricLogsInternal(date, date);
-        const userDateLogs = logs.filter(l => String(l.emp_id).trim() === String(userBioId).trim());
-
-        if (userDateLogs.length > 0) {
-            userDateLogs.sort((a, b) => a.time.localeCompare(b.time));
-            const bioIn = userDateLogs[0].time;
-            const bioOut = userDateLogs.length > 1 ? userDateLogs[userDateLogs.length - 1].time : null;
-
-            if (bioIn && bioOut) {
-                return res.status(400).json({
-                    message: `Restriction: Biometric entry already exists for this date (${bioIn} - ${bioOut}). Manual entry is only allowed if punch-in or punch-out is missing.`
-                });
-            }
-        }
 
         const { start: shiftStart, end: shiftEnd } = await getShiftTimes(users[0].shift);
 
@@ -821,7 +804,7 @@ exports.saveAttendance = async (req, res) => {
 
         if (punch_in && punch_out) total_hours = calculateTotalHours(punch_in, punch_out);
 
-        const attendanceId = await Attendance.create({
+        const attendanceData = {
             user_id,
             date,
             punch_in: punch_in || null,
@@ -831,10 +814,19 @@ exports.saveAttendance = async (req, res) => {
             early_punch_out,
             total_hours,
             status: 'Present',
-            biometric_id: userBioId || null
-        });
+            biometric_id: userBioId || null,
+            is_edited: 1
+        };
 
-        res.status(201).json({ message: 'Attendance saved successfully', id: attendanceId });
+        let attendanceId;
+        if (existing.length > 0) {
+            attendanceId = existing[0].id;
+            await Attendance.update(attendanceId, attendanceData);
+            return res.status(200).json({ message: 'Attendance updated successfully', id: attendanceId });
+        } else {
+            attendanceId = await Attendance.create(attendanceData);
+            return res.status(201).json({ message: 'Attendance saved successfully', id: attendanceId });
+        }
     } catch (error) {
         console.error('Error saving attendance:', error);
         res.status(500).json({ message: 'Error saving attendance', error: error.message });
@@ -1465,7 +1457,8 @@ exports.updateAttendance = async (req, res) => {
             early_punch_out,
             total_hours,
             status: 'Present',
-            biometric_id: userBioId
+            biometric_id: userBioId,
+            is_edited: 1
         });
 
         if (!updated) return res.status(404).json({ message: 'Attendance record not found' });

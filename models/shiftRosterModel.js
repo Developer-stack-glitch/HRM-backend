@@ -17,6 +17,7 @@ class ShiftRoster {
             LEFT JOIN departments d ON u.department = d.id
             WHERE sr.roster_date BETWEEN ? AND ?
         `;
+        if (!startDate || !endDate) return [];
         const params = [startDate, endDate];
 
         if (filters.department) {

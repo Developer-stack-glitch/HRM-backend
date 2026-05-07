@@ -3,18 +3,18 @@ const { pool } = require('../Config/dbConfig');
 const PayrollRun = {
     create: async (data) => {
         const {
-            company_id, batch_allocation_id, batch_name,
+            company_id, batch_allocation_id, batch_name, payroll_month,
             pay_type, period_start, period_end,
             total_employees, total_amount, status
         } = data;
         const [result] = await pool.execute(
             `INSERT INTO payroll_runs (
-                company_id, batch_allocation_id, batch_name, 
+                company_id, batch_allocation_id, batch_name, payroll_month, 
                 pay_type, period_start, period_end, 
                 total_employees, total_amount, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-                company_id || null, batch_allocation_id || null, batch_name || null,
+                company_id || null, batch_allocation_id || null, batch_name || null, payroll_month || null,
                 pay_type || 'MONTHLY', period_start || null, period_end || null,
                 total_employees || 0, total_amount || 0, status || 'Pending'
             ]
@@ -83,33 +83,35 @@ const PayrollRun = {
     updateStatus: async (id, status) => {
         const [result] = await pool.execute(
             'UPDATE payroll_runs SET status = ? WHERE id = ?',
-            [status || null, id || null]
+            [status || null, id]
         );
         return result.affectedRows;
     },
 
     update: async (id, data) => {
-        const { batch_name, period_start, period_end, pay_type } = data;
+        const { batch_name, payroll_month, period_start, period_end, pay_type } = data;
         const [result] = await pool.execute(
             `UPDATE payroll_runs SET 
                 batch_name = ?, 
+                payroll_month = ?,
                 period_start = ?, 
                 period_end = ?, 
                 pay_type = ? 
             WHERE id = ?`,
             [
                 batch_name || null,
+                payroll_month || null,
                 period_start || null,
                 period_end || null,
                 pay_type || 'MONTHLY',
-                id || null
+                id
             ]
         );
         return result.affectedRows;
     },
 
     delete: async (id) => {
-        const [result] = await pool.execute('DELETE FROM payroll_runs WHERE id = ?', [id || null]);
+        const [result] = await pool.execute('DELETE FROM payroll_runs WHERE id = ?', [id]);
         return result.affectedRows;
     }
 };
