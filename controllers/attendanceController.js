@@ -9,6 +9,7 @@ const puppeteer = require('puppeteer');
 const xml2js = require('xml2js');
 const ExcelJS = require('exceljs');
 const ShiftRoster = require('../models/shiftRosterModel');
+// Triggering restart
 const Holiday = require('../models/holidayModel');
 
 
@@ -209,7 +210,7 @@ const isWeekOff = async (userId, companyId, date) => {
     return new Date(date).getDay() === 0;
 };
 
-const enrichAttendanceRecord = async (record, shift, permissions = [], holidays = []) => {
+const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = []) => {
 
     const { start: shiftStart, end: shiftEnd } = await getShiftTimes(shift || record.shift);
 
@@ -223,18 +224,24 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
     const holidayDetail = getHolidayDetail(date, holidays, company);
     const is_holiday = !!holidayDetail;
 
-
-
     let shiftDurationMins = 0;
     if (shiftStart && shiftEnd) {
         shiftDurationMins = getMinutesFromTime(shiftEnd) - getMinutesFromTime(shiftStart);
         shift_hours = (shiftDurationMins / 60).toFixed(1);
     }
 
-    // Calculate Permission Deduction
-    let permissionDeduction = 0;
     const dateStr = formatDate(date);
-    const dayPermissions = (permissions || []).filter(p =>
+    
+    // Check for approved leaves (excluding permissions)
+    const leaveDetail = (allLeaves || []).find(l => 
+        String(l.employee_id) === String(user_id) && 
+        formatDate(l.start_date) <= dateStr && 
+        formatDate(l.end_date) >= dateStr && 
+        l.leave_type !== 'Permission'
+    );
+
+    // Calculate Permission Deduction
+    const dayPermissions = (allLeaves || []).filter(p =>
         String(p.employee_id) === String(user_id) &&
         formatDate(p.start_date) === dateStr &&
         p.leave_type === 'Permission'
@@ -243,6 +250,7 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
     const shiftStartMins = getMinutesFromTime(shiftStart);
     const shiftEndMins = getMinutesFromTime(shiftEnd);
 
+    let permissionDeduction = 0;
     if (dayPermissions.length > 0 && shiftDurationMins > 0) {
         let totalPermMins = 0;
         dayPermissions.forEach(p => {
@@ -296,6 +304,10 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
             is_week_off,
             is_holiday,
             holiday_name: holidayDetail ? holidayDetail.name : null,
+            leave_type: leaveDetail ? leaveDetail.leave_type : record.leave_type,
+            is_half_day: leaveDetail ? leaveDetail.is_half_day : record.is_half_day,
+            half_day_period: leaveDetail ? leaveDetail.half_day_period : record.half_day_period,
+            reason: leaveDetail ? leaveDetail.reason : record.reason,
             permission_deduction: permissionDeduction.toFixed(2),
             permissions: dayPermissions.map(p => ({
                 id: p.id,
@@ -310,7 +322,10 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
 
         if (isPunchInMissing && isDayComplete) {
             // Never came in at all
-            if (is_holiday) {
+            if (leaveDetail) {
+                status = 'On Leave';
+                working_day_value = leaveDetail.is_half_day ? 0.5 : 0.0;
+            } else if (is_holiday) {
                 status = 'Holiday';
                 working_day_value = 1.0;
             } else if (is_week_off) {
@@ -368,8 +383,9 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
         // Special case for Permission-only days
         working_day_value = Math.max(0, 1.0 - permissionDeduction);
         total_hours = "00:00";
-    } else if (status === 'On Leave') {
-        working_day_value = 0.0;
+    } else if (status === 'On Leave' || (leaveDetail && (status === 'Absent' || !status))) {
+        status = 'On Leave';
+        working_day_value = (leaveDetail && leaveDetail.is_half_day) ? 0.5 : 0.0;
     } else if (status === 'Holiday' || status === 'Week Off') {
         working_day_value = 1.0;
     } else if (status === 'Absent' || !status) {
@@ -397,8 +413,10 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
         is_week_off,
         is_holiday,
         holiday_name: holidayDetail ? holidayDetail.name : null,
-
-
+        leave_type: leaveDetail ? leaveDetail.leave_type : record.leave_type,
+        is_half_day: leaveDetail ? leaveDetail.is_half_day : record.is_half_day,
+        half_day_period: leaveDetail ? leaveDetail.half_day_period : record.half_day_period,
+        reason: leaveDetail ? leaveDetail.reason : record.reason,
         permission_deduction: permissionDeduction.toFixed(2),
         permissions: dayPermissions.map(p => ({
             id: p.id,
@@ -410,9 +428,11 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
 };
 
 const getAttendanceDataInternal = async (startDate, endDate, userId = null, userRole = 'admin', targetUserIds = null) => {
+    console.log(`[AttendanceInternal] Request for ${startDate} to ${endDate}. UserID: ${userId}, Role: ${userRole}, Targets: ${targetUserIds}`);
     // Ensure we have strings for dates
     startDate = startDate || getISTDate();
     endDate = endDate || getISTDate();
+    
     let dbAttendance;
 
     if (startDate && endDate) {
@@ -445,16 +465,14 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     }
     const [allLeaves] = await pool.execute(leaveQuery, leaveParams);
 
-    // Filter for permissions separately if needed, but we can just use allLeaves
+    // Filter for permissions separately
     const permissions = allLeaves.filter(l => l.leave_type === 'Permission');
-
 
     // Fetch biometric logs for the same range
     const logs = await fetchBiometricLogsInternal(startDate, endDate);
 
     // Fetch all holidays
     const [allHolidays] = await pool.execute("SELECT * FROM holidays");
-
 
     // Fetch shift roster for overrides
     const roster = await ShiftRoster.getRoster(startDate, endDate);
@@ -485,14 +503,17 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     dbAttendance.forEach(a => {
         const dateStr = formatDate(a.date);
         const key = `${a.user_id}_${dateStr}`;
+        const rosterEntry = rosterMap[key];
         combinedData[key] = {
             ...a,
             date: dateStr,
             punches: [],
             branch_id: a.branch_id || a.branch,
             department_id: a.department_id || a.department,
-            shift_id: a.shift_id || a.shift
+            shift_id: rosterEntry ? rosterEntry.shift_id : (a.shift_id || a.shift),
+            shift: rosterEntry ? rosterEntry.shift_name : (a.shift_name || a.shift)
         };
+        if (rosterEntry) combinedData[key].is_rostered = true;
         if (a.punch_in && a.punch_in !== '00:00' && a.punch_in !== '--:--') {
             combinedData[key].punches.push(a.punch_in);
         }
@@ -533,7 +554,6 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
                     work_mode: user.work_location
                 };
 
-                // Apply Shift Roster Override
                 const rosterEntry = rosterMap[key];
                 if (rosterEntry) {
                     combinedData[key].shift_id = rosterEntry.shift_id;
@@ -546,7 +566,7 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
         });
     }
 
-    // 3. Fill gaps for all users for all dates (to detect Absent/Week-offs)
+    // 3. Fill gaps for all users for all dates
     const startDateObj = new Date(startDate);
     const endDateObj = new Date(endDate);
 
@@ -582,7 +602,6 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
                     work_mode: user.work_location
                 };
 
-                // Apply Shift Roster Override
                 const rosterEntry = rosterMap[key];
                 if (rosterEntry) {
                     combinedData[key].shift_id = rosterEntry.shift_id;
@@ -596,16 +615,11 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
 
     const consolidated = await Promise.all(Object.values(combinedData).map(async group => {
         const uniquePunches = [...new Set(group.punches.filter(p => p && p !== '00:00' && p !== '--:--'))].sort();
-
         const punch_in = uniquePunches.length > 0 ? uniquePunches[0] : group.punch_in;
         const punch_out = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : group.punch_out;
-
         const { start: shiftStart, end: shiftEnd } = await getShiftTimes(group.shift);
 
-        let late_punch_in = "00:00";
-        let late_punch_out = "00:00";
-        let early_punch_out = "00:00";
-        let total_hours = "00:00";
+        let late_punch_in = "00:00", late_punch_out = "00:00", early_punch_out = "00:00", total_hours = "00:00";
 
         if (shiftStart && shiftEnd) {
             if (punch_in) late_punch_in = calculateTimeDiff(punch_in, shiftStart, 'late_in');
@@ -617,77 +631,49 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
         if (punch_in && punch_out) total_hours = calculateTotalHours(punch_in, punch_out);
 
         return enrichAttendanceRecord({
-            ...group,
-            punch_in,
-            punch_out,
-            late_punch_in,
-            late_punch_out,
-            early_punch_out,
-            total_hours,
-            status: group.status
-        }, group.shift, permissions, allHolidays);
+            ...group, punch_in, punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status: group.status
+        }, group.shift, allLeaves, allHolidays);
     }));
-
 
     finalAttendance = consolidated;
 
-
-    // Fetch all users to identify permission-only records
     const [allUsers] = await pool.execute("SELECT u.id, u.employee_name, u.emp_id, u.biometric_id, u.company, u.shift, d.name as designation_name, dep.name as department_name, b.name as branch_name FROM users u LEFT JOIN designations d ON u.designation = d.id LEFT JOIN departments dep ON u.department = dep.id LEFT JOIN branches b ON u.branch = b.id");
     const userMapGlobal = {};
-    allUsers.forEach(u => {
-        userMapGlobal[String(u.id)] = u;
+    allUsers.forEach(u => { userMapGlobal[String(u.id)] = u; });
+
+    // Note: Redundant leaveOnlyEntries logic removed as enrichAttendanceRecord now handles allLeaves via gap filler.
+    // This ensures no duplicate records for leave days and consistent status calculation.
+
+    // Rule: Mark only the VERY FIRST absent day in the selected range as 'CL' (On Leave)
+    // Grouping by user to ensure we find the true first absent day for each individual
+    const userRecordsMap = {};
+    finalAttendance.forEach(record => {
+        const uid = String(record.user_id);
+        if (!userRecordsMap[uid]) userRecordsMap[uid] = [];
+        userRecordsMap[uid].push(record);
     });
 
-    // Identify days that have leaves/permissions but no attendance record yet
-    const existingKeys = new Set(finalAttendance.map(a => `${a.user_id}_${formatDate(a.date)}`));
-    const leaveOnlyEntries = [];
+    let conversionCount = 0;
+    const debugUser = Object.keys(userRecordsMap)[0]; // Log first user for debug
+    
+    Object.keys(userRecordsMap).forEach(uid => {
+        const userRecords = userRecordsMap[uid];
+        userRecords.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+        
+        if (uid === debugUser) {
+            console.log(`[AttendanceRule] Debugging user ${uid}. Records:`, userRecords.map(r => `${r.date}:${r.status}`).join(', '));
+        }
 
-    allLeaves.forEach(lv => {
-        // Handle multi-day leaves
-        let current = new Date(lv.start_date);
-        const end = new Date(lv.end_date);
-
-        while (current <= end) {
-            const dateStr = formatDate(current);
-            // Only add if within the requested range
-            if (dateStr >= startDate && dateStr <= endDate) {
-                const key = `${lv.employee_id}_${dateStr}`;
-                if (!existingKeys.has(key)) {
-                    const user = userMapGlobal[String(lv.employee_id)];
-                    if (user) {
-                        leaveOnlyEntries.push({
-                            user_id: user.id,
-                            employee_name: user.employee_name,
-                            emp_id: user.emp_id,
-                            designation: user.designation_name,
-                            department: user.department_name,
-                            branch: user.branch_name,
-                            company: user.company,
-                            shift: user.shift,
-                            date: dateStr,
-                            punch_in: null,
-                            punch_out: null,
-                            total_hours: "00:00",
-                            status: lv.leave_type === 'Permission' ? 'Permission' : 'On Leave',
-                            leave_type: lv.leave_type,
-                            is_half_day: lv.is_half_day,
-                            half_day_period: lv.half_day_period,
-                            reason: lv.reason,
-                            start_time: lv.start_time,
-                            end_time: lv.end_time
-                        });
-                        existingKeys.add(key);
-                    }
-                }
-            }
-            current.setDate(current.getDate() + 1);
+        const firstAbsent = userRecords.find(r => r.status === 'Absent');
+        if (firstAbsent) {
+            firstAbsent.status = 'On Leave';
+            firstAbsent.leave_type = 'CL';
+            conversionCount++;
+            if (uid === debugUser) console.log(`[AttendanceRule] Converted ${firstAbsent.date} to On Leave`);
         }
     });
 
-    const enrichedLeaves = await Promise.all(leaveOnlyEntries.map(e => enrichAttendanceRecord(e, e.shift, allLeaves, allHolidays)));
-
-    finalAttendance = [...finalAttendance, ...enrichedLeaves];
+    console.log(`[AttendanceRule] Processed ${finalAttendance.length} records across ${Object.keys(userRecordsMap).length} users. Converted ${conversionCount} first-absences to 'On Leave'.`);
 
     return finalAttendance;
 };
@@ -814,7 +800,15 @@ exports.saveAttendance = async (req, res) => {
 
         const userBioId = users[0].biometric_id || users[0].emp_id;
 
-        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(users[0].shift);
+        const [roster] = await pool.execute(
+            `SELECT s.name as shift_name FROM shift_roster sr 
+             JOIN shifts s ON sr.shift_id = s.id 
+             WHERE sr.user_id = ? AND sr.roster_date = ?`,
+            [user_id || null, date]
+        );
+        const activeShift = roster.length > 0 ? roster[0].shift_name : users[0].shift;
+
+        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
 
         let late_punch_in = "00:00";
         let late_punch_out = "00:00";
@@ -867,9 +861,16 @@ exports.getTodayStatus = async (req, res) => {
 
         // Fetch user shift info
         const [users] = await pool.execute('SELECT shift FROM users WHERE id = ?', [userId || null]);
-        let shiftInfo = { start: null, end: null, duration: 0 };
-        if (users.length > 0 && users[0].shift) {
-            const { start, end } = await getShiftTimes(users[0].shift);
+        const [roster] = await pool.execute(
+            `SELECT s.name as shift_name FROM shift_roster sr 
+             JOIN shifts s ON sr.shift_id = s.id 
+             WHERE sr.user_id = ? AND sr.roster_date = ?`,
+            [userId || null, date]
+        );
+        const activeShift = roster.length > 0 ? roster[0].shift_name : users[0].shift;
+
+        if (users.length > 0 && activeShift) {
+            const { start, end } = await getShiftTimes(activeShift);
             let duration = 0;
             if (start && end) {
                 const startMins = getMinutesFromTime(start);
@@ -902,7 +903,16 @@ exports.getTodayStatus = async (req, res) => {
                     const punch_in = userLogs[0].time;
                     const punch_out = userLogs.length > 1 ? userLogs[userLogs.length - 1].time : null;
 
-                    const { start: shiftStart, end: shiftEnd } = await getShiftTimes(user.shift);
+                    // Check Shift Roster for override
+                    const [roster] = await pool.execute(
+                        `SELECT s.name as shift_name FROM shift_roster sr 
+                         JOIN shifts s ON sr.shift_id = s.id 
+                         WHERE sr.user_id = ? AND sr.roster_date = ?`,
+                        [userId || null, date]
+                    );
+                    const activeShift = roster.length > 0 ? roster[0].shift_name : user.shift;
+
+                    const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
                     let late_punch_in = "00:00";
                     let late_punch_out = "00:00";
                     let early_punch_out = "00:00";
@@ -1019,7 +1029,16 @@ exports.webClockIn = async (req, res) => {
         const finalPunchIn = uniquePunches[0];
         const finalPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : (existing.length > 0 ? existing[0].punch_out : null);
 
-        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(users[0].shift);
+        // Check Shift Roster for override
+        const [roster] = await pool.execute(
+            `SELECT s.name as shift_name FROM shift_roster sr 
+             JOIN shifts s ON sr.shift_id = s.id 
+             WHERE sr.user_id = ? AND sr.roster_date = ?`,
+            [user_id || null, date]
+        );
+        const activeShift = roster.length > 0 ? roster[0].shift_name : users[0].shift;
+
+        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
         let late_punch_in = "00:00";
         let late_punch_out = "00:00";
         let early_punch_out = "00:00";
@@ -1112,11 +1131,20 @@ exports.webClockOut = async (req, res) => {
         if (attn.punch_out) allPunches.push(attn.punch_out);
 
         const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '00:00' && p !== '--:--'))].sort();
+        // Check Shift Roster for override
+        const [roster] = await pool.execute(
+            `SELECT s.name as shift_name FROM shift_roster sr 
+             JOIN shifts s ON sr.shift_id = s.id 
+             WHERE sr.user_id = ? AND sr.roster_date = ?`,
+            [user_id || null, date]
+        );
+        const activeShift = roster.length > 0 ? roster[0].shift_name : users[0].shift;
+
         const punch_in = uniquePunches[0];
         const punch_out = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : web_punch_out;
 
         const total_hours = calculateTotalHours(punch_in, punch_out);
-        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(users[0].shift);
+        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
 
         let early_punch_out = "00:00";
         let late_punch_out = "00:00";
@@ -1293,7 +1321,12 @@ const processBiometricLogs = async (logs) => {
         const punch_in = group.punches[0];
         const punch_out = group.punches.length > 1 ? group.punches[group.punches.length - 1] : null;
 
-        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(group.shift);
+        // Check for rostered shift
+        const roster = await ShiftRoster.getRoster(group.date, group.date);
+        const rosterEntry = roster.find(r => String(r.user_id) === String(group.user_id));
+        const activeShift = rosterEntry ? rosterEntry.shift_name : group.shift;
+
+        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
         const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         const d = new Date(group.date);
         const dayName = days[d.getDay()];
@@ -1409,6 +1442,7 @@ const processBiometricLogs = async (logs) => {
 };
 
 exports.getAttendance = async (req, res) => {
+    console.log('[AttendanceAPI] GET /attendance called');
     try {
         const { startDate, endDate, userIds } = req.query;
         const userRole = req.user.role;
@@ -1456,7 +1490,16 @@ exports.updateAttendance = async (req, res) => {
         const [users] = await pool.execute('SELECT shift, biometric_id, emp_id FROM users WHERE id = ?', [user_id || null]);
         if (users.length === 0) return res.status(404).json({ message: 'User not found' });
 
-        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(users[0].shift);
+        // Check Shift Roster for override
+        const [roster] = await pool.execute(
+            `SELECT s.name as shift_name FROM shift_roster sr 
+             JOIN shifts s ON sr.shift_id = s.id 
+             WHERE sr.user_id = ? AND sr.roster_date = ?`,
+            [user_id || null, date]
+        );
+        const activeShift = roster.length > 0 ? roster[0].shift_name : users[0].shift;
+
+        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
 
         let late_punch_in = "00:00";
         let late_punch_out = "00:00";
@@ -1518,6 +1561,14 @@ exports.syncBiometricLogs = async (req, res) => {
             return res.json({ message: 'No logs found to sync', count: 0 });
         }
 
+        // Fetch roster for the range
+        const roster = await ShiftRoster.getRoster(fromDate, toDate);
+        const rosterMap = {};
+        roster.forEach(r => {
+            const dateStr = formatDate(r.roster_date);
+            rosterMap[`${r.user_id}_${dateStr}`] = r;
+        });
+
         // Store summarized logs for history
         const summarizedLogs = await processBiometricLogs(logs);
         if (summarizedLogs.length > 0) {
@@ -1577,7 +1628,9 @@ exports.syncBiometricLogs = async (req, res) => {
                 const newPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : attn.punch_out;
 
                 if (newPunchIn !== attn.punch_in || newPunchOut !== attn.punch_out) {
-                    const { start: shiftStart, end: shiftEnd } = await getShiftTimes(shift);
+                    const rosterEntry = rosterMap[`${user_id}_${date}`];
+                    const activeShift = rosterEntry ? rosterEntry.shift_name : shift;
+                    const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
                     let late_punch_in = "00:00";
                     let late_punch_out = "00:00";
                     let early_punch_out = "00:00";
@@ -1617,7 +1670,9 @@ exports.syncBiometricLogs = async (req, res) => {
             const punch_in = punches[0];
             const punch_out = punches.length > 1 ? punches[punches.length - 1] : null;
 
-            const { start: shiftStart, end: shiftEnd } = await getShiftTimes(shift);
+            const rosterEntry = rosterMap[`${user_id}_${date}`];
+            const activeShift = rosterEntry ? rosterEntry.shift_name : shift;
+            const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
 
             let late_punch_in = "00:00";
             let late_punch_out = "00:00";

@@ -82,18 +82,20 @@ const updateStatus = async (req, res) => {
 
         if (success && status === 'Approved') {
             // Update or Create Attendance record
+            const formattedDate = new Date(request.date).toISOString().split('T')[0];
             const [existingAttendance] = await pool.execute(
                 'SELECT id FROM attendance WHERE user_id = ? AND date = ?',
-                [request.user_id, request.date]
+                [request.user_id, formattedDate]
             );
 
             const attendanceData = {
                 user_id: request.user_id,
-                date: request.date,
+                date: formattedDate,
                 punch_in: request.check_in,
                 punch_out: request.check_out,
                 status: 'Present', // Regularized usually means present
-                is_web_punch: 1 // Marking as web/manual punch
+                is_web_punch: 1, // Marking as web/manual punch
+                is_edited: 1 // Set is_edited to ensure it's respected as manual override
             };
 
             if (existingAttendance.length > 0) {
