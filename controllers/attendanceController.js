@@ -277,7 +277,34 @@ const enrichAttendanceRecord = async (record, shift, permissions = [], holidays 
         }
     }
 
-    if (status === 'Present' || status === 'Incomplete') {
+    // If record is manually edited, respect the status and working value
+    if (record.is_edited) {
+        if (status === 'Absent') working_day_value = 0.0;
+        else if (status === 'Present' || status === 'Incomplete') {
+            working_day_value = 1.0;
+        } else if (status === 'Week Off' || status === 'Holiday') {
+            working_day_value = 1.0;
+        }
+        return {
+            ...record,
+            status,
+            total_hours,
+            late_penalty,
+            early_penalty,
+            working_day_value: parseFloat(working_day_value.toFixed(2)),
+            shift_hours,
+            is_week_off,
+            is_holiday,
+            holiday_name: holidayDetail ? holidayDetail.name : null,
+            permission_deduction: permissionDeduction.toFixed(2),
+            permissions: dayPermissions.map(p => ({
+                id: p.id,
+                start_time: p.start_time,
+                end_time: p.end_time,
+                reason: p.reason
+            }))
+        };
+    } else if (status === 'Present' || status === 'Incomplete') {
         const isPunchInMissing = !punch_in || punch_in === '--:--' || punch_in === '00:00';
         const isPunchOutMissing = !punch_out || punch_out === '--:--' || punch_out === '00:00';
 
@@ -772,7 +799,7 @@ const normalizeDate = (dateStr) => {
 
 exports.saveAttendance = async (req, res) => {
     try {
-        const { user_id, date, punch_in, punch_out } = req.body;
+        const { user_id, date, punch_in, punch_out, status } = req.body;
 
         // Check if attendance already exists for this user and date
         const [existing] = await pool.execute(
@@ -813,7 +840,7 @@ exports.saveAttendance = async (req, res) => {
             late_punch_out,
             early_punch_out,
             total_hours,
-            status: 'Present',
+            status: status || 'Present',
             biometric_id: userBioId || null,
             is_edited: 1
         };
@@ -1424,7 +1451,7 @@ exports.previewBiometricLogs = async (req, res) => {
 exports.updateAttendance = async (req, res) => {
     try {
         const { id } = req.params;
-        const { user_id, date, punch_in, punch_out } = req.body;
+        const { user_id, date, punch_in, punch_out, status } = req.body;
 
         const [users] = await pool.execute('SELECT shift, biometric_id, emp_id FROM users WHERE id = ?', [user_id || null]);
         if (users.length === 0) return res.status(404).json({ message: 'User not found' });
@@ -1456,7 +1483,7 @@ exports.updateAttendance = async (req, res) => {
             late_punch_out,
             early_punch_out,
             total_hours,
-            status: 'Present',
+            status: status || 'Present',
             biometric_id: userBioId,
             is_edited: 1
         });
