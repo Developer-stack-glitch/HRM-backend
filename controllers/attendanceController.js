@@ -256,17 +256,9 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
         dayPermissions.forEach(p => {
             const pStart = getMinutesFromTime(p.start_time);
             const pEnd = getMinutesFromTime(p.end_time);
-
-            const isStartPerm = (pStart <= shiftStartMins && pEnd > shiftStartMins);
-            const isEndPerm = (pEnd >= shiftEndMins && pStart < shiftEndMins);
-
-            if (status === 'Present' && (isStartPerm || isEndPerm)) {
-                return;
-            }
-
             totalPermMins += Math.max(0, pEnd - pStart);
         });
-        permissionDeduction = totalPermMins / shiftDurationMins;
+        permissionDeduction = Math.ceil(totalPermMins / 60) * 0.1;
     }
 
     const recordDateStr = formatDate(date);
@@ -289,7 +281,8 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
     if (record.is_edited) {
         if (status === 'Absent') working_day_value = 0.0;
         else if (status === 'Present' || status === 'Incomplete') {
-            working_day_value = 1.0;
+            // Even if edited, we should still subtract permission deductions if any
+            working_day_value = Math.max(0, 1.0 - permissionDeduction);
         } else if (status === 'Week Off' || status === 'Holiday') {
             working_day_value = 1.0;
         }
@@ -307,7 +300,7 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
             leave_type: leaveDetail ? leaveDetail.leave_type : record.leave_type,
             is_half_day: leaveDetail ? leaveDetail.is_half_day : record.is_half_day,
             half_day_period: leaveDetail ? leaveDetail.half_day_period : record.half_day_period,
-            reason: leaveDetail ? leaveDetail.reason : record.reason,
+            reason: leaveDetail ? leaveDetail.reason : (dayPermissions.length > 0 ? dayPermissions[0].reason : record.reason),
             permission_deduction: permissionDeduction.toFixed(2),
             permissions: dayPermissions.map(p => ({
                 id: p.id,
@@ -340,19 +333,45 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
 
             let totalPenalty = 0;
 
-            // Calculate Late In Penalty
-            const lateDeduction = getPenaltyDeduction(punch_in, shiftStart, 'late_in');
-            totalPenalty += lateDeduction;
-            if (lateDeduction > 0) {
-                late_penalty = formatMinutesToTime(Math.round(lateDeduction * 600));
+            // Check if there are permissions that cover the late arrival or early departure
+            const shiftStartMins = getMinutesFromTime(shiftStart);
+            const shiftEndMins = getMinutesFromTime(shiftEnd);
+            const punchInMins = getMinutesFromTime(punch_in);
+            const punchOutMins = getMinutesFromTime(punch_out);
+
+            const hasStartPermission = dayPermissions.some(p => {
+                const pStart = getMinutesFromTime(p.start_time);
+                const pEnd = getMinutesFromTime(p.end_time);
+                // Permission covers the shift start and extends to or beyond the punch in time
+                return pStart <= shiftStartMins && pEnd >= punchInMins;
+            });
+
+            const hasEndPermission = dayPermissions.some(p => {
+                const pStart = getMinutesFromTime(p.start_time);
+                const pEnd = getMinutesFromTime(p.end_time);
+                // Permission covers the shift end and starts at or before the punch out time
+                return pEnd >= shiftEndMins && pStart <= punchOutMins;
+            });
+
+            // Calculate Late In Penalty (only if no start permission covers it)
+            const isLate = !/^00:00(:00)?$/.test(calculateTimeDiff(punch_in, shiftStart, 'late_in'));
+            if (!hasStartPermission || !isLate) {
+                const lateDeduction = getPenaltyDeduction(punch_in, shiftStart, 'late_in');
+                totalPenalty += lateDeduction;
+                if (lateDeduction > 0) {
+                    late_penalty = formatMinutesToTime(Math.round(lateDeduction * 600));
+                }
             }
 
-            // Calculate Early Out Penalty (only if punched out)
+            // Calculate Early Out Penalty (only if punched out and no end permission covers it)
             if (!isPunchOutMissing) {
-                const earlyDeduction = getPenaltyDeduction(punch_out, shiftEnd, 'early_out');
-                totalPenalty += earlyDeduction;
-                if (earlyDeduction > 0) {
-                    early_penalty = formatMinutesToTime(Math.round(earlyDeduction * 600));
+                const isEarly = !/^00:00(:00)?$/.test(calculateTimeDiff(punch_out, shiftEnd, 'early_out'));
+                if (!hasEndPermission || !isEarly) {
+                    const earlyDeduction = getPenaltyDeduction(punch_out, shiftEnd, 'early_out');
+                    totalPenalty += earlyDeduction;
+                    if (earlyDeduction > 0) {
+                        early_penalty = formatMinutesToTime(Math.round(earlyDeduction * 600));
+                    }
                 }
                 status = 'Present';
             } else {
@@ -376,11 +395,13 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
             }
 
             if (status === 'Present') {
+                // Permissions waive penalties but the time is still deducted from working value
                 working_day_value = Math.max(0, 1.0 - totalPenalty - permissionDeduction);
             }
         }
-    } else if (status === 'Permission') {
-        // Special case for Permission-only days
+    } else if (status === 'Permission' || (dayPermissions.length > 0 && (status === 'Absent' || !status))) {
+        // Special case for Permission-only days or approved permission days where user didn't punch
+        status = 'Permission';
         working_day_value = Math.max(0, 1.0 - permissionDeduction);
         total_hours = "00:00";
     } else if (status === 'On Leave' || (leaveDetail && (status === 'Absent' || !status))) {
@@ -416,7 +437,7 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
         leave_type: leaveDetail ? leaveDetail.leave_type : record.leave_type,
         is_half_day: leaveDetail ? leaveDetail.is_half_day : record.is_half_day,
         half_day_period: leaveDetail ? leaveDetail.half_day_period : record.half_day_period,
-        reason: leaveDetail ? leaveDetail.reason : record.reason,
+        reason: leaveDetail ? leaveDetail.reason : (dayPermissions.length > 0 ? dayPermissions[0].reason : record.reason),
         permission_deduction: permissionDeduction.toFixed(2),
         permissions: dayPermissions.map(p => ({
             id: p.id,

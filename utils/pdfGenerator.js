@@ -246,7 +246,7 @@ const generatePayslipPDF = async (data) => {
                                 <td class="${e.label === 'GROSS' ? 'bold' : ''}">${e.label}</td>
                                 <td class="text-right ${e.label === 'GROSS' ? 'bold' : ''}">${e.label ? formatCurrency(e.value) : ''}</td>
                                 <td class="${d.label === 'NET' ? 'bold' : ''}">${d.label}</td>
-                                <td class="text-right ${d.label === 'NET' ? 'bold' : ''}">${d.label ? formatCurrency(d.value) : ''}</td>
+                                <td class="text-right ${d.label === 'NET' ? 'bold' : ''}">${d.label ? (d.label === 'NET' ? Math.round(d.value).toLocaleString('en-IN') : formatCurrency(d.value)) : ''}</td>
                             </tr>
                         `;
             }

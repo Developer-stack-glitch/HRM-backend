@@ -129,24 +129,41 @@ const payrollRunController = {
         const periodStart = payrollRun.period_start;
         const periodEnd = payrollRun.period_end;
         const companyId = payrollRun.company_id;
-        // Get all salary structures and their components to avoid repeated queries
+        // Get all salary structures
         const [allStructures] = await pool.execute('SELECT * FROM batch_allocations');
-        const [allStructureComponents] = await pool.execute(`
-            SELECT sc.*, ssc.batch_allocation_id
-            FROM salary_components sc
-            JOIN salary_structure_components ssc ON sc.id = ssc.component_id
-            WHERE sc.is_active = 1
-            ORDER BY sc.sort_order ASC, sc.created_at ASC
-        `);
+
+        // Fetch all active components for this company (including global ones)
+        const [allActiveComponents] = await pool.execute(`
+            SELECT * FROM salary_components 
+            WHERE is_active = 1 AND (company_id = ? OR company_id IS NULL)
+            ORDER BY sort_order ASC, created_at ASC
+        `, [companyId]);
+
+        // Also fetch the structure mappings
+        const [allMappings] = await pool.execute('SELECT * FROM salary_structure_components');
 
         const structureMap = {};
         allStructures.forEach(s => {
             structureMap[s.id] = { ...s, components: [] };
         });
-        allStructureComponents.forEach(sc => {
-            if (structureMap[sc.batch_allocation_id]) {
-                structureMap[sc.batch_allocation_id].components.push(sc);
+
+        // First, add components explicitly linked to structures
+        allMappings.forEach(mapping => {
+            const comp = allActiveComponents.find(c => c.id === mapping.component_id);
+            if (comp && structureMap[mapping.batch_allocation_id]) {
+                structureMap[mapping.batch_allocation_id].components.push(comp);
             }
+        });
+
+        // Then, ensure all active 'Deduction' type components are added to ALL structures 
+        // if not already present (treating active deductions as global defaults)
+        const activeDeductions = allActiveComponents.filter(c => c.type === 'Deduction');
+        Object.values(structureMap).forEach(structure => {
+            activeDeductions.forEach(deduction => {
+                if (!structure.components.find(c => c.id === deduction.id)) {
+                    structure.components.push(deduction);
+                }
+            });
         });
 
         const { getAttendanceDataInternal, isWeekOff } = require('./attendanceController');
@@ -327,7 +344,7 @@ const payrollRunController = {
             const totalDeductionsIncludingLOP = totalDeductions + lop;
             
             const incentiveAmount = incentiveMap[emp.id] || 0;
-            const net = Math.max(0, monthlySalary - totalDeductionsIncludingLOP + (parseFloat(emp.variable) || 0) + (parseFloat(emp.travel_allowance) || 0) + incentiveAmount);
+            const net = Math.round(Math.max(0, monthlySalary - totalDeductionsIncludingLOP + (parseFloat(emp.variable) || 0) + (parseFloat(emp.travel_allowance) || 0) + incentiveAmount));
 
             // Helper to get pro-rated value from breakdown (case-insensitive)
             const getCompValue = (compBreakdown, nameList) => {
@@ -358,7 +375,7 @@ const payrollRunController = {
                 total_deductions: parseFloat(totalDeductions.toFixed(2)), // Store component sum separately
                 deductions: parseFloat(totalDeductionsIncludingLOP.toFixed(2)),
                 other_deductions: getCompValue(deductions, ['Other', 'Other Deduction', 'Other Deductions']),
-                net: parseFloat(net.toFixed(2)),
+                net: Math.round(net),
 
                 // Full legacy fields for UI compatibility (non-pro-rated to show expectations)
                 salary: getCompValue(earnings, ['Basic', 'BASIC']),
