@@ -180,6 +180,7 @@ router.get('/payroll-run/payslip/:itemId/download', protect, payrollRunControlle
 router.get('/payroll-run/:id/employees', protect, payrollRunController.getPayrollEmployees);
 router.put('/payroll-run/:id/status', protect, payrollRunController.updateStatus);
 router.put('/payroll-run/:id', protect, payrollRunController.update);
+router.delete('/payroll-run/:id', protect, payrollRunController.delete);
 router.post('/payroll-run/:id/finalize', protect, payrollRunController.finalize);
 
 // --- Asset Routes ---

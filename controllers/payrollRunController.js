@@ -110,6 +110,19 @@ const payrollRunController = {
         }
     },
 
+    delete: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const affectedRows = await PayrollRun.delete(id);
+            if (affectedRows === 0) {
+                return res.status(404).json({ error: 'Payroll run not found' });
+            }
+            res.json({ message: 'Payroll run deleted successfully' });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    },
+
     // Internal Helper: Calculate payroll for a list of employees
     calculatePayrollInternal: async (payrollRun, employees) => {
         const CompanyPolicy = require('../models/companyPolicyModel');
@@ -342,6 +355,7 @@ const payrollRunController = {
                 fullSalary: monthlySalary,
                 gross: parseFloat(monthlySalary.toFixed(2)),
                 lop: parseFloat(lop.toFixed(2)),
+                total_deductions: parseFloat(totalDeductions.toFixed(2)), // Store component sum separately
                 deductions: parseFloat(totalDeductionsIncludingLOP.toFixed(2)),
                 other_deductions: getCompValue(deductions, ['Other', 'Other Deduction', 'Other Deductions']),
                 net: parseFloat(net.toFixed(2)),
@@ -357,7 +371,7 @@ const payrollRunController = {
                 other: getCompValue(earnings, ['Other', 'Other Allowance', 'Other Earnings']),
 
                 // Deductions (Legacy)
-                epf: getCompValue(deductions, ['EPF']),
+                epf: getCompValue(deductions, ['EPF', 'PF']),
                 esi: getCompValue(deductions, ['ESI']),
                 pt: getCompValue(deductions, ['PT']),
                 it: getCompValue(deductions, ['IT', 'Income Tax']),
@@ -632,7 +646,7 @@ const payrollRunController = {
                         esi: esiVal,
                         pt: ptVal,
                         other_deductions: otherDeductions,
-                        deductions: epfVal + esiVal + ptVal + otherDeductions,
+                        deductions: epfVal + esiVal + ptVal + otherDeductions + Number(item.lop || 0),
                         variable: Number(item.variable_pay || item.variable || 0),
                         travel: Number(item.travel_allowance_pay || 0),
                         travel_allowance: Number(item.travel_allowance_pay || 0),
