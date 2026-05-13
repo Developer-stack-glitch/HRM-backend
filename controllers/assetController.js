@@ -471,7 +471,7 @@ const generateAssetReport = async (req, res) => {
             await browser.close();
 
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename=Asset_Report_${reportType}_${new Date().getTime()}.pdf`);
+            res.setHeader('Content-Disposition', `attachment; filename="Asset_Report_${reportType}_${new Date().getTime()}.pdf"`);
             return res.send(pdfBuffer);
         }
 
@@ -535,7 +535,7 @@ const generateAssetReport = async (req, res) => {
 
         worksheet.columns = columnWidths.map(w => ({ width: w }));
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=${reportType}_report_${new Date().getTime()}.xlsx`);
+        res.setHeader('Content-Disposition', `attachment; filename="${reportType}_report_${new Date().getTime()}.xlsx"`);
         await workbook.xlsx.write(res);
         res.end();
 

@@ -278,38 +278,18 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
     }
 
     // If record is manually edited, respect the status and working value
+    // If record is manually edited, we still allow the penalty logic to run unless specifically overridden
     if (record.is_edited) {
         if (status === 'Absent') working_day_value = 0.0;
         else if (status === 'Present' || status === 'Incomplete') {
-            // Even if edited, we should still subtract permission deductions if any
-            working_day_value = Math.max(0, 1.0 - permissionDeduction);
+            working_day_value = 1.0;
         } else if (status === 'Week Off' || status === 'Holiday') {
             working_day_value = 1.0;
         }
-        return {
-            ...record,
-            status,
-            total_hours,
-            late_penalty,
-            early_penalty,
-            working_day_value: parseFloat(working_day_value.toFixed(2)),
-            shift_hours,
-            is_week_off,
-            is_holiday,
-            holiday_name: holidayDetail ? holidayDetail.name : null,
-            leave_type: leaveDetail ? leaveDetail.leave_type : record.leave_type,
-            is_half_day: leaveDetail ? leaveDetail.is_half_day : record.is_half_day,
-            half_day_period: leaveDetail ? leaveDetail.half_day_period : record.half_day_period,
-            reason: leaveDetail ? leaveDetail.reason : (dayPermissions.length > 0 ? dayPermissions[0].reason : record.reason),
-            permission_deduction: permissionDeduction.toFixed(2),
-            permissions: dayPermissions.map(p => ({
-                id: p.id,
-                start_time: p.start_time,
-                end_time: p.end_time,
-                reason: p.reason
-            }))
-        };
-    } else if (status === 'Present' || status === 'Incomplete') {
+        // Instead of returning here, we proceed to calculate penalties based on the punch times
+    }
+
+    if (status === 'Present' || status === 'Incomplete') {
         const isPunchInMissing = !punch_in || punch_in === '--:--' || punch_in === '00:00';
         const isPunchOutMissing = !punch_out || punch_out === '--:--' || punch_out === '00:00';
 
@@ -330,12 +310,8 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
             }
             total_hours = "00:00";
         } else if (!isPunchInMissing) {
-
             let totalPenalty = 0;
 
-            // Check if there are permissions that cover the late arrival or early departure
-            const shiftStartMins = getMinutesFromTime(shiftStart);
-            const shiftEndMins = getMinutesFromTime(shiftEnd);
             const punchInMins = getMinutesFromTime(punch_in);
             const punchOutMins = getMinutesFromTime(punch_out);
 
@@ -397,6 +373,9 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
             if (status === 'Present') {
                 // Permissions waive penalties but the time is still deducted from working value
                 working_day_value = Math.max(0, 1.0 - totalPenalty - permissionDeduction);
+                if (totalPenalty > 0 || permissionDeduction > 0) {
+                    console.log(`[Deduction] User: ${user_id}, Date: ${recordDateStr}, Penalty: ${totalPenalty}, PermDed: ${permissionDeduction}, Final WDV: ${working_day_value}`);
+                }
             }
         }
     } else if (status === 'Permission' || (dayPermissions.length > 0 && (status === 'Absent' || !status))) {
@@ -1985,7 +1964,7 @@ exports.generateAttendanceReport = async (req, res) => {
             await browser.close();
 
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename=${reportType}_${startDate}.pdf`);
+            res.setHeader('Content-Disposition', `attachment; filename="${reportType}_${startDate}.pdf"`);
             return res.send(pdfBuffer);
         }
 
@@ -2254,7 +2233,7 @@ exports.generateAttendanceReport = async (req, res) => {
         }
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=${reportType}_${startDate}_to_${endDate}.xlsx`);
+        res.setHeader('Content-Disposition', `attachment; filename="${reportType}_${startDate}_to_${endDate}.xlsx"`);
 
         await workbook.xlsx.write(res);
         res.end();

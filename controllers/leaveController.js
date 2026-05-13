@@ -238,7 +238,7 @@ const generateLeaveReport = async (req, res) => {
         ];
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename=leave_report_${fromDate}_to_${toDate}.xlsx`);
+        res.setHeader('Content-Disposition', `attachment; filename="leave_report_${fromDate}_to_${toDate}.xlsx"`);
 
         await workbook.xlsx.write(res);
         res.end();

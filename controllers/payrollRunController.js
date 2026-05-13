@@ -950,6 +950,15 @@ const payrollRunController = {
             }
 
             const item = itemRows[0];
+            
+            // Parse JSON fields if they are strings
+            if (typeof item.earnings_breakdown === 'string') {
+                try { item.earnings_breakdown = JSON.parse(item.earnings_breakdown); } catch (e) { item.earnings_breakdown = {}; }
+            }
+            if (typeof item.deductions_breakdown === 'string') {
+                try { item.deductions_breakdown = JSON.parse(item.deductions_breakdown); } catch (e) { item.deductions_breakdown = {}; }
+            }
+
             const company = await Organization.getCompanyById(item.company_id);
 
             // 2. Generate PDF
@@ -985,7 +994,7 @@ const payrollRunController = {
             const filename = `Payslip_${item.employee_name.replace(/\s+/g, '_')}_${monthName.replace(/\s+/g, '_')}.pdf`;
 
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
             res.send(pdfBuffer);
         } catch (error) {
             console.error('Error downloading payslip:', error);
@@ -1410,11 +1419,11 @@ const payrollRunController = {
                 await browser.close();
 
                 res.setHeader('Content-Type', 'application/pdf');
-                res.setHeader('Content-Disposition', `attachment; filename=Payroll_Report_${reportType}_${new Date().getTime()}.pdf`);
+                res.setHeader('Content-Disposition', `attachment; filename="Payroll_Report_${reportType}_${new Date().getTime()}.pdf"`);
                 res.send(pdfBuffer);
             } else {
                 res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-                res.setHeader('Content-Disposition', `attachment; filename=Payroll_Report_${reportType}_${new Date().getTime()}.xlsx`);
+                res.setHeader('Content-Disposition', `attachment; filename="Payroll_Report_${reportType}_${new Date().getTime()}.xlsx"`);
                 await workbook.xlsx.write(res);
                 res.end();
             }

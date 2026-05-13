@@ -203,8 +203,15 @@ const generatePayslipPDF = async (data) => {
             </thead>
             <tbody>
                 ${(() => {
-            const earningsRaw = { ...(employee.earnings_breakdown || {}) };
-            const deductionsRaw = { ...(employee.deductions_breakdown || {}) };
+            let earningsRaw = employee.earnings_breakdown || {};
+            let deductionsRaw = employee.deductions_breakdown || {};
+
+            if (typeof earningsRaw === 'string') {
+                try { earningsRaw = JSON.parse(earningsRaw); } catch (e) { earningsRaw = {}; }
+            }
+            if (typeof deductionsRaw === 'string') {
+                try { deductionsRaw = JSON.parse(deductionsRaw); } catch (e) { deductionsRaw = {}; }
+            }
 
             // If earnings breakdown is empty, use legacy fields
             if (Object.keys(earningsRaw).length === 0) {
