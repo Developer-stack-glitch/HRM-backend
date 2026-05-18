@@ -294,21 +294,25 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
         const isPunchOutMissing = !punch_out || punch_out === '--:--' || punch_out === '00:00';
 
         if (isPunchInMissing && isDayComplete) {
-            // Never came in at all
-            if (leaveDetail) {
-                status = 'On Leave';
-                working_day_value = leaveDetail.is_half_day ? 0.5 : 0.0;
-            } else if (is_holiday) {
-                status = 'Holiday';
-                working_day_value = 1.0;
-            } else if (is_week_off) {
-                status = 'Week Off';
-                working_day_value = 1.0;
+            if (record.is_edited) {
+                // Respect manually saved status and working_day_value
             } else {
-                status = 'Absent';
-                working_day_value = 0.0;
+                // Never came in at all
+                if (leaveDetail) {
+                    status = 'On Leave';
+                    working_day_value = leaveDetail.is_half_day ? 0.5 : 0.0;
+                } else if (is_holiday) {
+                    status = 'Holiday';
+                    working_day_value = 1.0;
+                } else if (is_week_off) {
+                    status = 'Week Off';
+                    working_day_value = 1.0;
+                } else {
+                    status = 'Absent';
+                    working_day_value = 0.0;
+                }
+                total_hours = "00:00";
             }
-            total_hours = "00:00";
         } else if (!isPunchInMissing) {
             let totalPenalty = 0;
 
@@ -353,19 +357,22 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
             } else {
                 // No punch out yet
                 if (isDayComplete) {
-                    if (is_holiday) {
-                        status = 'Holiday';
-                        working_day_value = 1.0;
-                    } else if (is_week_off) {
-                        status = 'Week Off';
-                        working_day_value = 1.0;
+                    if (record.is_edited) {
+                        // Respect manually saved status and working_day_value
                     } else {
-                        status = 'Incomplete';
-                        working_day_value = 0.0; // Forgot to punch out = 0.0 value
+                        if (is_holiday) {
+                            status = 'Holiday';
+                            working_day_value = 1.0;
+                        } else if (is_week_off) {
+                            status = 'Week Off';
+                            working_day_value = 1.0;
+                        } else {
+                            status = 'Incomplete';
+                            working_day_value = 0.0; // Forgot to punch out = 0.0 value
+                        }
                     }
                     total_hours = "00:00";
                 } else {
-
                     status = 'Present';
                 }
             }
@@ -389,7 +396,10 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
     } else if (status === 'Holiday' || status === 'Week Off') {
         working_day_value = 1.0;
     } else if (status === 'Absent' || !status) {
-        if (is_holiday) {
+        if (record.is_edited && status === 'Absent') {
+            status = 'Absent';
+            working_day_value = 0.0;
+        } else if (is_holiday) {
             status = 'Holiday';
             working_day_value = 1.0;
         } else if (is_week_off) {
@@ -664,7 +674,7 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
             console.log(`[AttendanceRule] Debugging user ${uid}. Records:`, userRecords.map(r => `${r.date}:${r.status}`).join(', '));
         }
 
-        const firstAbsent = userRecords.find(r => r.status === 'Absent');
+        const firstAbsent = userRecords.find(r => r.status === 'Absent' && !r.is_edited);
         if (firstAbsent) {
             firstAbsent.status = 'On Leave';
             firstAbsent.leave_type = 'CL';
