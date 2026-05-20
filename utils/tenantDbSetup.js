@@ -591,6 +591,18 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
         `);
 
         await tenantPool.execute(`
+            CREATE TABLE IF NOT EXISTS payroll_incentives (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NULL,
+                payroll_date DATE NULL,
+                amount DECIMAL(15,2) NULL,
+                description TEXT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `);
+
+        await tenantPool.execute(`
             CREATE TABLE IF NOT EXISTS advance_salary (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,

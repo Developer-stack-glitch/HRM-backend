@@ -18,21 +18,21 @@ const getISTDate = () => {
 };
 
 const getISTTime = () => {
-    return new Date().toLocaleTimeString('en-GB', { 
-        timeZone: 'Asia/Kolkata', 
-        hour12: false, 
-        hour: '2-digit', 
-        minute: '2-digit', 
-        second: '2-digit' 
+    return new Date().toLocaleTimeString('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
     });
 };
 
 const getISTHoursAndMinutes = () => {
-    const istStr = new Date().toLocaleTimeString('en-GB', { 
-        timeZone: 'Asia/Kolkata', 
-        hour12: false, 
-        hour: '2-digit', 
-        minute: '2-digit' 
+    const istStr = new Date().toLocaleTimeString('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit'
     });
     const [h, m] = istStr.split(':').map(Number);
     return { h, m };
@@ -168,8 +168,8 @@ const getShiftTimes = async (shiftInput) => {
 const getHolidayDetail = (date, holidays, companyId) => {
     if (!holidays || !Array.isArray(holidays)) return null;
     const dateStr = formatDate(date);
-    return holidays.find(h => 
-        formatDate(h.date) === dateStr && 
+    return holidays.find(h =>
+        formatDate(h.date) === dateStr &&
         (!h.company_id || String(h.company_id) === String(companyId))
     ) || null;
 };
@@ -231,12 +231,12 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
     }
 
     const dateStr = formatDate(date);
-    
+
     // Check for approved leaves (excluding permissions)
-    const leaveDetail = (allLeaves || []).find(l => 
-        String(l.employee_id) === String(user_id) && 
-        formatDate(l.start_date) <= dateStr && 
-        formatDate(l.end_date) >= dateStr && 
+    const leaveDetail = (allLeaves || []).find(l =>
+        String(l.employee_id) === String(user_id) &&
+        formatDate(l.start_date) <= dateStr &&
+        formatDate(l.end_date) >= dateStr &&
         l.leave_type !== 'Permission'
     );
 
@@ -411,7 +411,6 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
         }
     }
 
-
     return {
         ...record,
         status,
@@ -442,7 +441,7 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     // Ensure we have strings for dates
     startDate = startDate || getISTDate();
     endDate = endDate || getISTDate();
-    
+
     let dbAttendance;
 
     if (startDate && endDate) {
@@ -496,7 +495,7 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
 
     const { User } = require('../models/userModel');
     let users = await User.getAll();
-    
+
     if (targetUserIds && Array.isArray(targetUserIds) && targetUserIds.length > 0) {
         users = users.filter(u => targetUserIds.includes(String(u.id)));
     }
@@ -665,11 +664,11 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
 
     let conversionCount = 0;
     const debugUser = Object.keys(userRecordsMap)[0]; // Log first user for debug
-    
+
     Object.keys(userRecordsMap).forEach(uid => {
         const userRecords = userRecordsMap[uid];
         userRecords.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-        
+
         if (uid === debugUser) {
             console.log(`[AttendanceRule] Debugging user ${uid}. Records:`, userRecords.map(r => `${r.date}:${r.status}`).join(', '));
         }
@@ -1457,7 +1456,7 @@ exports.getAttendance = async (req, res) => {
         const { startDate, endDate, userIds } = req.query;
         const userRole = req.user.role;
         const userId = req.user.id;
-        
+
         let targetUserIds = null;
         if (userIds) {
             targetUserIds = userIds.split(',').map(id => id.trim()).filter(Boolean);
