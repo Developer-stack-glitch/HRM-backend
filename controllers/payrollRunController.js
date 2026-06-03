@@ -155,16 +155,7 @@ const payrollRunController = {
             }
         });
 
-        // Then, ensure all active 'Deduction' type components are added to ALL structures 
-        // if not already present (treating active deductions as global defaults)
-        const activeDeductions = allActiveComponents.filter(c => c.type === 'Deduction');
-        Object.values(structureMap).forEach(structure => {
-            activeDeductions.forEach(deduction => {
-                if (!structure.components.find(c => c.id === deduction.id)) {
-                    structure.components.push(deduction);
-                }
-            });
-        });
+
 
         const { getAttendanceDataInternal, isWeekOff } = require('./attendanceController');
         const targetUserIds = employees.map(e => String(e.id));
