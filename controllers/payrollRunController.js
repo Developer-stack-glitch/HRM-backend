@@ -606,6 +606,10 @@ const payrollRunController = {
     getPayrollEmployees: async (req, res) => {
         try {
             const { id } = req.params;
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 10;
+            const search = (req.query.search || '').toLowerCase();
+            const offset = (page - 1) * limit;
 
             // 1. Get payroll run details
             const [runRows] = await pool.execute('SELECT * FROM payroll_runs WHERE id = ?', [id || null]);
@@ -614,7 +618,14 @@ const payrollRunController = {
 
             // 2. If completed, return from payroll_items
             if (payrollRun.status === 'Completed') {
-                const [itemRows] = await pool.execute(`
+                let countQuery = `
+                    SELECT COUNT(*) as total
+                    FROM payroll_items pi
+                    LEFT JOIN users u ON pi.user_id = u.id
+                    LEFT JOIN departments d ON u.department = d.id
+                    WHERE pi.payroll_run_id = ?
+                `;
+                let dataQuery = `
                     SELECT 
                         pi.id, pi.user_id, pi.employee_name as name, pi.emp_id, 
                         COALESCE(pi.department, d.name, u.department) as department, 
@@ -633,7 +644,24 @@ const payrollRunController = {
                     LEFT JOIN departments d ON u.department = d.id
                     LEFT JOIN designations des ON u.designation = des.id
                     WHERE pi.payroll_run_id = ?
-                `, [id || null]);
+                `;
+                
+                const queryParams = [id || null];
+                if (search) {
+                    const searchCondition = ` AND (LOWER(pi.employee_name) LIKE ? OR LOWER(pi.emp_id) LIKE ? OR LOWER(d.name) LIKE ?)`;
+                    countQuery += searchCondition;
+                    dataQuery += searchCondition;
+                    const searchWildcard = `%${search}%`;
+                    queryParams.push(searchWildcard, searchWildcard, searchWildcard);
+                }
+                
+                dataQuery += ` LIMIT ? OFFSET ?`;
+                const dataParams = [...queryParams, limit, offset];
+
+                const [countRows] = await pool.execute(countQuery, queryParams);
+                const totalFiltered = countRows[0].total;
+
+                const [itemRows] = await pool.execute(dataQuery, dataParams);
 
                 // For historical compatibility, parse strings to numbers and add structure
                 const enrichedItems = itemRows.map(item => {
@@ -709,7 +737,7 @@ const payrollRunController = {
 
                 return res.json({
                     payrollRun,
-                    totalEmployees: enrichedItems.length,
+                    totalEmployees: totalFiltered,
                     totalAmount: parseFloat(payrollRun.total_amount),
                     workingDays,
                     totalCalendarDays,
@@ -741,18 +769,29 @@ const payrollRunController = {
             const [holdRows] = await pool.execute('SELECT user_id FROM payroll_holds WHERE payroll_run_id = ?', [id || null]);
             const holdUserIds = new Set(holdRows.map(h => h.user_id));
 
-            const employeesWithHolds = calculation.payrollEmployees.map(emp => ({
+            let employeesWithHolds = calculation.payrollEmployees.map(emp => ({
                 ...emp,
                 is_hold: holdUserIds.has(emp.user_id)
             }));
+
+            if (search) {
+                employeesWithHolds = employeesWithHolds.filter(emp => 
+                    (emp.name || '').toLowerCase().includes(search) || 
+                    (emp.emp_id || '').toLowerCase().includes(search) || 
+                    (emp.department || '').toLowerCase().includes(search)
+                );
+            }
+
+            const totalFiltered = employeesWithHolds.length;
+            const paginatedEmployees = employeesWithHolds.slice(offset, offset + limit);
 
             res.json({
                 payrollRun,
                 workingDays: calculation.workingDays,
                 totalCalendarDays: calculation.totalCalendarDays,
-                totalEmployees: calculation.payrollEmployees.length,
+                totalEmployees: totalFiltered,
                 totalAmount: parseFloat(calculation.totalAmount.toFixed(2)),
-                employees: employeesWithHolds
+                employees: paginatedEmployees
             });
 
         } catch (error) {
