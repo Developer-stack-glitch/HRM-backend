@@ -406,12 +406,12 @@ const User = {
     },
 
     getFilterOptions: async () => {
-        const [empTypes] = await pool.execute('SELECT DISTINCT employment_type as label FROM users WHERE employment_type IS NOT NULL AND employment_type != ""');
-        const [workModes] = await pool.execute('SELECT DISTINCT work_location as label FROM users WHERE work_location IS NOT NULL AND work_location != ""');
+        const [empTypes] = await pool.execute('SELECT id, name as label FROM employment_types');
+        const [workModes] = await pool.execute('SELECT id, name as label FROM work_locations');
 
         return {
-            employmentTypes: empTypes.map(row => ({ id: row.label.toLowerCase(), label: row.label })),
-            workModes: workModes.map(row => ({ id: row.label.toLowerCase(), label: row.label }))
+            employmentTypes: empTypes.map(row => ({ id: row.id.toString(), label: row.label })),
+            workModes: workModes.map(row => ({ id: row.id.toString(), label: row.label }))
         };
     },
 

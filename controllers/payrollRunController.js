@@ -203,20 +203,30 @@ const payrollRunController = {
         const definitions = await getDefinitions(companyId);
 
         // Fetch Incentives (Addons) for this period
+        const endDateWithTime = formatDateStr(periodEnd) + ' 23:59:59';
         const [incentives] = await pool.execute(`
-            SELECT user_id, SUM(amount) as total_incentive
+            SELECT user_id, amount, description, type
             FROM payroll_incentives
             WHERE payroll_date BETWEEN ? AND ?
-            GROUP BY user_id
-        `, [formatDateStr(periodStart), formatDateStr(periodEnd)]);
+        `, [formatDateStr(periodStart), endDateWithTime]);
 
         const incentiveMap = {};
+        const addonDeductionMap = {};
+        const variableMap = {};
         incentives.forEach(inc => {
-            incentiveMap[inc.user_id] = parseFloat(inc.total_incentive) || 0;
+            const desc = (inc.description || '').toLowerCase();
+            const val = parseFloat(inc.amount) || 0;
+            if (inc.type === 'deduction') {
+                addonDeductionMap[inc.user_id] = (addonDeductionMap[inc.user_id] || 0) + val;
+            } else if (desc.includes('variable')) {
+                variableMap[inc.user_id] = (variableMap[inc.user_id] || 0) + val;
+            } else {
+                incentiveMap[inc.user_id] = (incentiveMap[inc.user_id] || 0) + val;
+            }
         });
 
         const payrollEmployees = await Promise.all(employees.map(async (emp) => {
-            const structureId = emp.salary_structure_id || payrollRun.batch_allocation_id;
+            const structureId = payrollRun.batch_allocation_id || emp.salary_structure_id;
             const structure = structureMap[structureId] || { name: 'Standard Salary', components: [] };
 
             // Determine monthly salary based on new year_gross_salary field
@@ -281,7 +291,7 @@ const payrollRunController = {
             const lop = absentDays * perDaySalary;
 
             // --- Determine Structure for this Employee ---
-            const empStructureId = emp.salary_structure_id || payrollRun.batch_allocation_id;
+            const empStructureId = payrollRun.batch_allocation_id || emp.salary_structure_id;
             const currentStructure = structureMap[empStructureId];
             const structureName = currentStructure ? currentStructure.name : 'Standard';
             const dynamicComponents = currentStructure ? currentStructure.components : [];
@@ -332,10 +342,20 @@ const payrollRunController = {
             }
 
             const totalDeductions = Object.values(deductions).reduce((a, b) => a + b, 0);
-            const totalDeductionsIncludingLOP = totalDeductions + lop;
             
             const incentiveAmount = incentiveMap[emp.id] || 0;
-            const net = Math.round(Math.max(0, monthlySalary - totalDeductionsIncludingLOP + (parseFloat(emp.variable) || 0) + (parseFloat(emp.travel_allowance) || 0) + incentiveAmount));
+            const addonDeductionAmount = addonDeductionMap[emp.id] || 0;
+            const dynamicVariable = variableMap[emp.id] || 0;
+            const fixedVariable = parseFloat(emp.variable) || 0;
+            const finalVariableAmount = dynamicVariable > 0 ? dynamicVariable : fixedVariable;
+
+            if (addonDeductionAmount > 0) {
+                deductions['Addon Deduction'] = (deductions['Addon Deduction'] || 0) + addonDeductionAmount;
+            }
+
+            const totalDeductionsIncludingLOP = totalDeductions + lop + addonDeductionAmount;
+
+            const net = Math.round(Math.max(0, monthlySalary - totalDeductionsIncludingLOP + finalVariableAmount + (parseFloat(emp.travel_allowance) || 0) + incentiveAmount));
 
             // Helper to get pro-rated value from breakdown (case-insensitive)
             const getCompValue = (compBreakdown, nameList) => {
@@ -364,6 +384,7 @@ const payrollRunController = {
                 gross: parseFloat(monthlySalary.toFixed(2)),
                 lop: parseFloat(lop.toFixed(2)),
                 total_deductions: parseFloat(totalDeductions.toFixed(2)), // Store component sum separately
+                addon_deduction: parseFloat(addonDeductionAmount.toFixed(2)), // Addon deduction
                 deductions: parseFloat(totalDeductionsIncludingLOP.toFixed(2)),
                 other_deductions: getCompValue(deductions, ['Other', 'Other Deduction', 'Other Deductions']),
                 net: Math.round(net),
@@ -376,6 +397,7 @@ const payrollRunController = {
                 special: getCompValue(earnings, ['Special Allowance', 'Special', 'Spl Allowance']),
                 perDiem: getCompValue(earnings, ['Per Diem', 'Per Diem Allowance']),
                 incentives: getCompValue(earnings, ['Incentive', 'Incentives']) + incentiveAmount,
+                variable: finalVariableAmount,
                 other: getCompValue(earnings, ['Other', 'Other Allowance', 'Other Earnings']),
 
                 // Deductions (Legacy)
@@ -636,7 +658,7 @@ const payrollRunController = {
                         pi.bonus_incentives as variable, pi.net_salary as net,
                         pi.hra, pi.conveyance, pi.medical, pi.special, pi.other,
                         pi.cl_used, pi.permission_used, pi.employer_epfo_deduction as employer_epfo,
-                        pi.variable_pay, pi.travel_allowance_pay, pi.per_diem, pi.bank_ac_no, pi.pf_no,
+                        pi.variable_pay, pi.travel_allowance_pay, pi.per_diem, COALESCE(pi.bank_ac_no, u.bank_ac_no) as bank_ac_no, COALESCE(pi.pf_no, u.pf) as pf_no,
                         pi.earnings_breakdown, pi.deductions_breakdown,
                         pi.is_hold
                     FROM payroll_items pi
@@ -715,6 +737,7 @@ const payrollRunController = {
 
                     resObj.it = getVal(deductions, ['IT', 'Income Tax']);
                     resObj.vpf = getVal(deductions, ['VPF', 'Voluntary PF']);
+                    resObj.addon_deduction = getVal(deductions, ['Addon Deduction']);
                     if (!resObj.other) resObj.other = getVal(earnings, ['Other', 'Other Allowance', 'Other Earnings']);
                     if (!resObj.salary) resObj.salary = getVal(earnings, ['Basic', 'BASIC']);
                     if (!resObj.incentives) resObj.incentives = getVal(earnings, ['Incentive', 'Incentives']);
@@ -853,8 +876,8 @@ const payrollRunController = {
                         cl_used, permission_used, employer_epfo_deduction, variable_pay, travel_allowance_pay, per_diem,
                         other_deductions, bonus_incentives,
                         earnings_breakdown, deductions_breakdown,
-                        is_hold
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_hold, bank_ac_no, pf_no
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `, [
                     id, emp.user_id, emp.name || null, emp.emp_id || null,
                     emp.department || null, emp.designation || null, emp.salary || 0, emp.paidDays || 0,
@@ -865,7 +888,9 @@ const payrollRunController = {
                     emp.other_deductions || 0, emp.incentives || 0,
                     JSON.stringify(emp.earnings_breakdown || {}),
                     JSON.stringify(emp.deductions_breakdown || {}),
-                    isHold
+                    isHold,
+                    emp.bank_ac_no || null,
+                    emp.pf_no || null
                 ]);
             }
 
@@ -969,9 +994,10 @@ const payrollRunController = {
 
             // 1. Get payroll item details
             const [itemRows] = await pool.execute(`
-                SELECT pi.*, pr.period_start, pr.period_end, pr.payroll_month, pr.company_id
+                SELECT pi.*, COALESCE(pi.bank_ac_no, u.bank_ac_no) as bank_ac_no, COALESCE(pi.pf_no, u.pf) as pf_no, pr.period_start, pr.period_end, pr.payroll_month, pr.company_id
                 FROM payroll_items pi
                 JOIN payroll_runs pr ON pi.payroll_run_id = pr.id
+                LEFT JOIN users u ON pi.user_id = u.id
                 WHERE pi.id = ? AND (pi.user_id = ? OR ? = 'admin' OR ? = 'superadmin')
             `, [itemId, userId, req.user.role, req.user.role]);
 
@@ -1053,7 +1079,7 @@ const payrollRunController = {
                 SELECT 
                     pi.*, 
                     u.employee_name, u.emp_id, u.off_mail_id as email, u.gender, u.doj,
-                    u.bank_ac_no, u.ifsc, u.pan, u.pf as u_pf_no, u.esi, u.blood_group,
+                    COALESCE(pi.bank_ac_no, u.bank_ac_no) as bank_ac_no, u.ifsc, u.pan, COALESCE(pi.pf_no, u.pf) as pf_no, u.esi, u.blood_group,
                     pr.batch_name, pr.period_start, pr.period_end,
                     d.name as department_name, des.name as designation_name,
                     b.name as branch_name

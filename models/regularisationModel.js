@@ -17,31 +17,67 @@ class Regularisation {
             JOIN users u ON r.user_id = u.id
             WHERE 1=1
         `;
+        let countQuery = `
+            SELECT COUNT(*) as total
+            FROM regularisations r
+            JOIN users u ON r.user_id = u.id
+            WHERE 1=1
+        `;
         const params = [];
 
         if (filters.reporting_manager && filters.personal_user_id) {
-            query += ' AND (u.reporting_manager = ? OR r.user_id = ?)';
+            const condition = ' AND (u.reporting_manager = ? OR r.user_id = ?)';
+            query += condition; countQuery += condition;
             params.push(filters.reporting_manager, filters.personal_user_id);
         } else if (filters.user_id) {
-            query += ' AND r.user_id = ?';
+            const condition = ' AND r.user_id = ?';
+            query += condition; countQuery += condition;
             params.push(filters.user_id);
         } else if (filters.reporting_manager) {
-            query += ' AND u.reporting_manager = ?';
+            const condition = ' AND u.reporting_manager = ?';
+            query += condition; countQuery += condition;
             params.push(filters.reporting_manager);
         }
         if (filters.status) {
-            query += ' AND r.status = ?';
+            const condition = ' AND r.status = ?';
+            query += condition; countQuery += condition;
             params.push(filters.status);
         }
         if (filters.startDate && filters.endDate) {
-            query += ' AND r.date BETWEEN ? AND ?';
+            const condition = ' AND r.date BETWEEN ? AND ?';
+            query += condition; countQuery += condition;
             params.push(filters.startDate, filters.endDate);
+        }
+        if (filters.search) {
+            const condition = ' AND (u.employee_name LIKE ? OR u.emp_id LIKE ? OR r.reason LIKE ?)';
+            query += condition; countQuery += condition;
+            const searchParam = `%${filters.search}%`;
+            params.push(searchParam, searchParam, searchParam);
         }
 
         query += ' ORDER BY r.date DESC, r.created_at DESC';
 
-        const [rows] = await pool.execute(query, params);
-        return rows;
+        if (filters.limit) {
+            const page = parseInt(filters.page) || 1;
+            const limit = parseInt(filters.limit) || 10;
+            const offset = (page - 1) * limit;
+            
+            query += ` LIMIT ${limit} OFFSET ${offset}`;
+            
+            const [rows] = await pool.execute(query, params);
+            const [countResult] = await pool.execute(countQuery, params);
+            const total = countResult[0].total;
+
+            return {
+                data: rows,
+                total,
+                page,
+                totalPages: Math.ceil(total / limit)
+            };
+        } else {
+            const [rows] = await pool.execute(query, params);
+            return rows;
+        }
     }
 
     static async getById(id) {

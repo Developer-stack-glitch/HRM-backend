@@ -178,13 +178,13 @@ const generatePayslipPDF = async (data) => {
                     <td class="label-cell">DEPARTMENT</td>
                     <td class="value-cell">${employee.department || 'N/A'}</td>
                     <td class="label-cell">ACCT. NO.</td>
-                    <td class="value-cell">${employee.bank_ac_no || 'XXXXXXXXXXXX'}</td>
+                    <td class="value-cell">${employee.bank_ac_no || '-'}</td>
                 </tr>
                 <tr>
                     <td class="label-cell">LOSS OF PAY</td>
                     <td class="value-cell">${employee.absentDays || 0}</td>
                     <td class="label-cell">PF NO.</td>
-                    <td class="value-cell">${employee.pf_no || 'XXXXXXXXXXXX'}</td>
+                    <td class="value-cell">${employee.pf_no || '-'}</td>
                 </tr>
             </tbody>
         </table>

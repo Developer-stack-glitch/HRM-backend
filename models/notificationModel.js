@@ -30,8 +30,8 @@ const Notification = {
 
     markAllAsRead: async (userId, role) => {
         const [result] = await pool.execute(
-            'UPDATE notifications SET is_read = TRUE WHERE user_id = ? OR role = ?',
-            [userId, role]
+            'UPDATE notifications SET is_read = TRUE WHERE user_id = ? OR role = ? OR (role = \'admin\' AND ? = \'superadmin\')',
+            [userId, role, role]
         );
         return result.affectedRows;
     },
