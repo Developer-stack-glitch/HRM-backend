@@ -7,7 +7,7 @@ yarn-error.log*
 
 # Dependency directories
 node_modules/
-
+Config/serviceAccountKey.json
 # Environment variables
 .env
 .env.*

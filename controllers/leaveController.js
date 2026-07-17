@@ -82,11 +82,21 @@ const updateLeave = async (req, res) => {
         if (status && employee_id) {
             const io = req.app.get('socketio');
             const { sendNotification } = require('../utils/notificationHelper');
+            
+            // Explicitly handle Rejected status
+            let title = `Leave ${status}`;
+            let message = `Your leave request has been ${status.toLowerCase()}${remarks ? ': ' + remarks : ''}`;
+            
+            if (status === 'Rejected') {
+                title = 'Leave Request Rejected';
+                message = `Your leave request was rejected${remarks ? '. Reason: ' + remarks : ''}`;
+            }
+
             await sendNotification(io, {
                 user_id: employee_id,
                 type: 'leave',
-                title: `Leave ${status}`,
-                message: `Your leave request has been ${status.toLowerCase()}${remarks ? ': ' + remarks : ''}`,
+                title: title,
+                message: message,
                 extra_data: { leave_id: id, status, type: 'leave_status_update' }
             });
         }

@@ -1,5 +1,6 @@
 const Policy = require('../models/policyModel');
 const asyncHandler = require('express-async-handler');
+const { sendNotification } = require('../utils/notificationHelper');
 
 // @desc    Get all policies
 // @route   GET /api/policies
@@ -33,6 +34,23 @@ const createPolicy = asyncHandler(async (req, res) => {
         created_by
     });
 
+    // Send push notification to all employees about new policy
+    const io = req.app.get('io');
+    await sendNotification(io, {
+        role: 'employee',
+        type: 'policy_published',
+        title: 'New Company Policy',
+        message: `A new policy "${title}" has been published${category ? ` under ${category}` : ''}.`,
+        extra_data: { policy_id: policyId }
+    });
+    await sendNotification(io, {
+        role: 'admin',
+        type: 'policy_published',
+        title: 'New Company Policy',
+        message: `A new policy "${title}" has been published${category ? ` under ${category}` : ''}.`,
+        extra_data: { policy_id: policyId }
+    });
+
     res.status(201).json({ message: 'Policy created successfully', policyId });
 });
 
@@ -61,6 +79,16 @@ const updatePolicy = asyncHandler(async (req, res) => {
     };
 
     await Policy.update(id, dataToUpdate);
+
+    // Notify all employees about policy update
+    const io = req.app.get('io');
+    await sendNotification(io, {
+        role: 'employee',
+        type: 'policy_updated',
+        title: 'Company Policy Updated',
+        message: `The policy "${title || existingPolicy.title}" has been updated. Please review the changes.`,
+        extra_data: { policy_id: id }
+    });
 
     res.status(200).json({ message: 'Policy updated successfully' });
 });

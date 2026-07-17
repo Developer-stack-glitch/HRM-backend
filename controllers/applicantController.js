@@ -1,5 +1,6 @@
 const { pool } = require('../Config/dbConfig');
 const { sendEmail } = require('../utils/emailService');
+const { sendNotification } = require('../utils/notificationHelper');
 
 // @desc    Get all applicants
 // @route   GET /api/applicants
@@ -39,6 +40,19 @@ const updateApplicantStatus = async (req, res) => {
     
     try {
         await pool.execute('UPDATE applicants SET status = ? WHERE id = ?', [status, req.params.id]);
+
+        // Notify admins about applicant status change
+        try {
+            const io = req.app.get('io');
+            await sendNotification(io, {
+                role: 'admin',
+                type: 'applicant_status_changed',
+                title: 'Applicant Status Updated',
+                message: `Applicant status has been changed to "${status}".`,
+                extra_data: { applicant_id: req.params.id, status }
+            });
+        } catch (nErr) { console.error('Applicant status notification error:', nErr); }
+
         res.status(200).json({ message: 'Applicant status updated' });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -73,6 +87,19 @@ const createApplicant = async (req, res) => {
             'INSERT INTO applicants (job_id, name, email, phone, experience_years, gender, location, resume_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [job_id, name, email, phone, experience_years, gender, location, resume_url || null, status || 'Applied']
         );
+
+        // Notify admins about new applicant
+        try {
+            const io = req.app.get('io');
+            await sendNotification(io, {
+                role: 'admin',
+                type: 'new_applicant',
+                title: 'New Applicant',
+                message: `${name} has applied for a position.`,
+                extra_data: { applicant_id: result.insertId, job_id }
+            });
+        } catch (nErr) { console.error('Applicant notification error:', nErr); }
+
         res.status(201).json({ message: 'Applicant created successfully', id: result.insertId });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -180,6 +207,18 @@ const scheduleInterview = async (req, res) => {
             console.error('Failed to send interview email:', emailError);
             // We don't fail the whole request if email fails, but maybe log it.
         }
+
+        // Notify admins about the scheduled interview
+        try {
+            const io = req.app.get('io');
+            await sendNotification(io, {
+                role: 'admin',
+                type: 'interview_scheduled',
+                title: 'Interview Scheduled',
+                message: `Interview (${round_name}) scheduled for ${applicant.name} on ${date} at ${time}.`,
+                extra_data: { applicant_id: applicantId, round_name, date, time }
+            });
+        } catch (nErr) { console.error('Interview notification error:', nErr); }
 
         res.status(200).json({ message: 'Interview scheduled successfully and email sent' });
     } catch (error) {
@@ -296,6 +335,18 @@ const sendOfferLetter = async (req, res) => {
         } catch (emailError) {
             console.error('Failed to send offer email:', emailError);
         }
+
+        // Notify admins about the offer letter
+        try {
+            const io = req.app.get('io');
+            await sendNotification(io, {
+                role: 'admin',
+                type: 'offer_sent',
+                title: 'Offer Letter Sent',
+                message: `Offer letter sent to ${applicant.name} for "${applicant.job_title}" with CTC ₹${new Intl.NumberFormat('en-IN').format(offered_ctc)}.`,
+                extra_data: { applicant_id: id, offered_ctc, joining_date }
+            });
+        } catch (nErr) { console.error('Offer notification error:', nErr); }
 
         res.status(200).json({ message: 'Offer letter sent successfully' });
     } catch (error) {

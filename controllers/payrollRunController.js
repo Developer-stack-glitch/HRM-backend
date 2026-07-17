@@ -7,6 +7,7 @@ const { pool } = require('../Config/dbConfig');
 const { sendEmail } = require('../utils/emailService');
 const Organization = require('../models/organizationModel');
 const { generatePayslipPDF } = require('../utils/pdfGenerator');
+const { sendNotification } = require('../utils/notificationHelper');
 
 // Helper: get all dates between start and end (inclusive)
 function getDateRange(start, end) {
@@ -154,7 +155,6 @@ const payrollRunController = {
                 structureMap[mapping.batch_allocation_id].components.push(comp);
             }
         });
-
 
 
         const { getAttendanceDataInternal, isWeekOff } = require('./attendanceController');
@@ -342,7 +342,7 @@ const payrollRunController = {
             }
 
             const totalDeductions = Object.values(deductions).reduce((a, b) => a + b, 0);
-            
+
             const incentiveAmount = incentiveMap[emp.id] || 0;
             const addonDeductionAmount = addonDeductionMap[emp.id] || 0;
             const dynamicVariable = variableMap[emp.id] || 0;
@@ -396,8 +396,8 @@ const payrollRunController = {
                 medical: getCompValue(earnings, ['Medical', 'Medical Allowance', 'Medical Reimbursement', 'Medical Reim']),
                 special: getCompValue(earnings, ['Special Allowance', 'Special', 'Spl Allowance']),
                 perDiem: getCompValue(earnings, ['Per Diem', 'Per Diem Allowance']),
-                incentives: getCompValue(earnings, ['Incentive', 'Incentives']) + incentiveAmount,
-                variable: finalVariableAmount,
+                incentives: 0,
+                variable: finalVariableAmount + getCompValue(earnings, ['Incentive', 'Incentives']) + incentiveAmount,
                 other: getCompValue(earnings, ['Other', 'Other Allowance', 'Other Earnings']),
 
                 // Deductions (Legacy)
@@ -459,11 +459,27 @@ const payrollRunController = {
                     'INSERT INTO payroll_holds (payroll_run_id, user_id, reason) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE reason = ?',
                     [payroll_run_id, user_id, reason || '', reason || '']
                 );
+                
+                await sendNotification(req.app.get('io'), {
+                    user_id: user_id,
+                    type: 'payroll_hold',
+                    title: 'Salary on Hold',
+                    message: `Your salary for the current payroll has been placed on hold. Reason: ${reason || 'Not specified'}`,
+                    extra_data: { payroll_run_id }
+                });
             } else {
                 await pool.execute(
                     'DELETE FROM payroll_holds WHERE payroll_run_id = ? AND user_id = ?',
                     [payroll_run_id, user_id]
                 );
+
+                await sendNotification(req.app.get('io'), {
+                    user_id: user_id,
+                    type: 'payroll_release',
+                    title: 'Salary Hold Released',
+                    message: `The hold on your salary has been released.`,
+                    extra_data: { payroll_run_id }
+                });
             }
 
             res.json({ message: `Salary ${is_hold ? 'placed on hold' : 'released'} successfully` });
@@ -634,7 +650,7 @@ const payrollRunController = {
             const offset = (page - 1) * limit;
 
             // 1. Get payroll run details
-            const [runRows] = await pool.execute('SELECT * FROM payroll_runs WHERE id = ?', [id || null]);
+            const [runRows] = await pool.query('SELECT * FROM payroll_runs WHERE id = ?', [id || null]);
             if (!runRows || runRows.length === 0) return res.status(404).json({ error: 'Payroll run not found' });
             const payrollRun = runRows[0];
 
@@ -667,7 +683,7 @@ const payrollRunController = {
                     LEFT JOIN designations des ON u.designation = des.id
                     WHERE pi.payroll_run_id = ?
                 `;
-                
+
                 const queryParams = [id || null];
                 if (search) {
                     const searchCondition = ` AND (LOWER(pi.employee_name) LIKE ? OR LOWER(pi.emp_id) LIKE ? OR LOWER(d.name) LIKE ?)`;
@@ -676,14 +692,14 @@ const payrollRunController = {
                     const searchWildcard = `%${search}%`;
                     queryParams.push(searchWildcard, searchWildcard, searchWildcard);
                 }
-                
+
                 dataQuery += ` LIMIT ? OFFSET ?`;
                 const dataParams = [...queryParams, limit, offset];
 
-                const [countRows] = await pool.execute(countQuery, queryParams);
+                const [countRows] = await pool.query(countQuery, queryParams);
                 const totalFiltered = countRows[0].total;
 
-                const [itemRows] = await pool.execute(dataQuery, dataParams);
+                const [itemRows] = await pool.query(dataQuery, dataParams);
 
                 // For historical compatibility, parse strings to numbers and add structure
                 const enrichedItems = itemRows.map(item => {
@@ -705,7 +721,7 @@ const payrollRunController = {
                         pt: ptVal,
                         other_deductions: otherDeductions,
                         deductions: epfVal + esiVal + ptVal + otherDeductions + Number(item.lop || 0),
-                        variable: Number(item.variable_pay || item.variable || 0),
+                        variable: Number(item.variable_pay || 0) + Number(item.variable || 0),
                         travel: Number(item.travel_allowance_pay || 0),
                         travel_allowance: Number(item.travel_allowance_pay || 0),
                         employer_epfo: Number(item.employer_epfo || 0),
@@ -798,9 +814,9 @@ const payrollRunController = {
             }));
 
             if (search) {
-                employeesWithHolds = employeesWithHolds.filter(emp => 
-                    (emp.name || '').toLowerCase().includes(search) || 
-                    (emp.emp_id || '').toLowerCase().includes(search) || 
+                employeesWithHolds = employeesWithHolds.filter(emp =>
+                    (emp.name || '').toLowerCase().includes(search) ||
+                    (emp.emp_id || '').toLowerCase().includes(search) ||
                     (emp.department || '').toLowerCase().includes(search)
                 );
             }
@@ -909,6 +925,20 @@ const payrollRunController = {
             // 6. Send emails to employees asynchronously
             const company = await Organization.getCompanyById(payrollRun.company_id);
             payrollRunController.sendEmailsToEmployees(calculation.payrollEmployees, payrollRun, company);
+            
+            // 7. Send push notifications
+            const monthName = payrollRun.payroll_month || new Date(payrollRun.period_start).toLocaleString('default', { month: 'long', year: 'numeric' });
+            for (const emp of calculation.payrollEmployees) {
+                if (!holdUserIds.has(emp.user_id)) {
+                    await sendNotification(req.app.get('io'), {
+                        user_id: emp.user_id,
+                        type: 'payroll_processed',
+                        title: 'Payslip Available',
+                        message: `Your payslip for ${monthName} is now available.`,
+                        extra_data: { payroll_run_id: id }
+                    });
+                }
+            }
 
             res.json({ message: 'Payroll finalized and email sent successfully', totalAmount: calculation.totalAmount });
 
@@ -1006,7 +1036,7 @@ const payrollRunController = {
             }
 
             const item = itemRows[0];
-            
+
             // Parse JSON fields if they are strings
             if (typeof item.earnings_breakdown === 'string') {
                 try { item.earnings_breakdown = JSON.parse(item.earnings_breakdown); } catch (e) { item.earnings_breakdown = {}; }

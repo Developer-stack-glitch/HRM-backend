@@ -10,11 +10,18 @@ const { sendEmail } = require('../utils/emailService');
 // @route   POST /api/auth/login
 // @access  Public
 const loginUser = asyncHandler(async (req, res) => {
-    const { email, password, staySignedIn } = req.body;
+    const { email, password, staySignedIn, fcmToken } = req.body;
 
     const user = await User.findByEmail(email);
 
     if (user && (await bcrypt.compare(password, user.password))) {
+        // Update FCM Token if provided
+        if (fcmToken) {
+            await pool.execute('UPDATE users SET fcm_token = ? WHERE id = ?', [fcmToken, user.id]);
+        } else {
+            console.log(`[Auth] No FCM token provided for user ${user.id}`);
+        }
+
         // Fetch role permissions
         const RolePermission = require('../models/rolePermissionModel');
         const permissions = await RolePermission.getPermissionsByRole(user.role);

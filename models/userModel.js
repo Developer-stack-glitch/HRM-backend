@@ -17,7 +17,8 @@ const USER_COLUMNS = [
     'document_resume', 'document_test_paper', 'document_10th', 'document_12th',
     'document_ug', 'document_pg', 'document_aadhar', 'document_pan',
     'document_passbook', 'document_photo', 'document_relieving_letter',
-    'document_exp_letter', 'document_payslips', 'document_emp_details_form'
+    'document_exp_letter', 'document_payslips', 'document_emp_details_form',
+    'fcm_token'
 ];
 
 const User = {

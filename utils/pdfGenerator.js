@@ -232,7 +232,6 @@ const generatePayslipPDF = async (data) => {
             earnings.push({ label: 'GROSS', value: employee.gross || 0 });
             earnings.push({ label: 'VARIABLE', value: employee.variable || 0 });
             earnings.push({ label: 'BALANCE', value: 0 });
-            earnings.push({ label: 'INCENTIVES', value: employee.incentives || 0 });
 
             const deductions = [];
             Object.entries(deductionsRaw).forEach(([label, value]) => {

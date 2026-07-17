@@ -1,4 +1,5 @@
 const { pool } = require('../Config/dbConfig');
+const { sendNotification } = require('../utils/notificationHelper');
 
 // @desc    Get all jobs
 // @route   GET /api/jobs
@@ -73,6 +74,18 @@ const createJob = async (req, res) => {
             ]
         );
         res.status(201).json({ id: result.insertId, title, status });
+
+        // Notify admins about the new job posting
+        try {
+            const io = req.app.get('io');
+            await sendNotification(io, {
+                role: 'admin',
+                type: 'job_posted',
+                title: 'New Job Posted',
+                message: `A new job "${title}" has been posted${department ? ` in ${department}` : ''}.`,
+                extra_data: { job_id: result.insertId }
+            });
+        } catch (nErr) { console.error('Job notification error:', nErr); }
     } catch (error) {
         console.error('Create Job Error:', error);
         res.status(500).json({ message: error.message });
@@ -126,6 +139,20 @@ const updateJob = async (req, res) => {
             ]
         );
         res.status(200).json({ message: 'Job updated successfully' });
+
+        // If status changed to Closed, notify admins
+        if (status && status !== 'Open') {
+            try {
+                const io = req.app.get('io');
+                await sendNotification(io, {
+                    role: 'admin',
+                    type: 'job_status_changed',
+                    title: 'Job Status Updated',
+                    message: `Job "${title}" status changed to ${status}.`,
+                    extra_data: { job_id: req.params.id, status }
+                });
+            } catch (nErr) { console.error('Job update notification error:', nErr); }
+        }
     } catch (error) {
         console.error('Update Job Error:', error);
         res.status(500).json({ message: error.message });

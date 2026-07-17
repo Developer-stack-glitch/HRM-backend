@@ -11,7 +11,7 @@ const ExcelJS = require('exceljs');
 const ShiftRoster = require('../models/shiftRosterModel');
 // Triggering restart
 const Holiday = require('../models/holidayModel');
-
+const CompanyPolicy = require('../models/companyPolicyModel');
 
 const getISTDate = () => {
     return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -501,9 +501,11 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     }
 
     const userMap = {};
+    const userByIdMap = {};
     users.forEach(u => {
         const fetchId = u.biometric_id || u.emp_id;
         if (fetchId) userMap[String(fetchId).trim()] = u;
+        userByIdMap[String(u.id)] = u;
     });
 
     const combinedData = {};
@@ -513,6 +515,8 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
         const dateStr = formatDate(a.date);
         const key = `${a.user_id}_${dateStr}`;
         const rosterEntry = rosterMap[key];
+        const u = userByIdMap[String(a.user_id)];
+
         combinedData[key] = {
             ...a,
             date: dateStr,
@@ -520,7 +524,15 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
             branch_id: a.branch_id || a.branch,
             department_id: a.department_id || a.department,
             shift_id: rosterEntry ? rosterEntry.shift_id : (a.shift_id || a.shift),
-            shift: rosterEntry ? rosterEntry.shift_name : (a.shift_name || a.shift)
+            shift: rosterEntry ? rosterEntry.shift_name : (a.shift_name || a.shift),
+            employee_name: u ? u.employee_name : a.employee_name,
+            emp_id: u ? u.emp_id : a.emp_id,
+            company: u ? u.company : a.company,
+            employment_type: u ? u.employment_type : a.employment_type,
+            work_mode: u ? u.work_location : a.work_mode,
+            designation: u ? u.designation_name : a.designation,
+            department: u ? u.department_name : a.department,
+            branch: u ? u.branch_name : a.branch
         };
         if (rosterEntry) combinedData[key].is_rostered = true;
         if (a.punch_in && a.punch_in !== '00:00' && a.punch_in !== '--:--') {
@@ -1729,9 +1741,24 @@ exports.syncBiometricLogs = async (req, res) => {
 };
 exports.generateAttendanceReport = async (req, res) => {
     try {
-        const { startDate, endDate, reportType, branches, shifts, empTypes, workModes, includeTimings, format } = req.query;
+        const { startDate, endDate, reportType, branches, shifts, empTypes, workModes, format } = req.query;
         const userRole = req.user.role;
         const userId = req.user.id;
+
+        const companyId = req.user.company_id || req.user.company;
+        let permissionLimit = 0.2; // default 2 hours
+        let clLimit = 1; // default 1 day cl
+        if (companyId) {
+            try {
+                const policy = await CompanyPolicy.getByCompanyId(companyId);
+                if (policy) {
+                    if (policy.permission_limit) permissionLimit = parseFloat(policy.permission_limit);
+                    if (policy.cl_limit) clLimit = parseFloat(policy.cl_limit);
+                }
+            } catch (err) {
+                console.error("Error fetching company policy:", err);
+            }
+        }
 
         let attendanceData = await getAttendanceDataInternal(startDate, endDate, userId, userRole);
 
@@ -1848,7 +1875,7 @@ exports.generateAttendanceReport = async (req, res) => {
                 dateHeaders.forEach(d => {
                     htmlContent += `<th style="text-align: center; font-size: 8px;">${d}</th>`;
                 });
-                htmlContent += `<th style="font-size: 8px;">Days</th><th style="font-size: 8px;">P</th><th style="font-size: 8px;">A</th><th style="font-size: 8px;">HD</th><th style="font-size: 8px;">WO</th><th style="font-size: 8px;">H</th><th style="font-size: 8px;">L</th><th style="font-size: 8px;">Work</th><th style="font-size: 8px;">OT</th></tr></thead><tbody>`;
+                htmlContent += `<th style="font-size: 8px;">Days</th><th style="font-size: 8px;">P</th><th style="font-size: 8px;">A</th><th style="font-size: 8px;">HD</th><th style="font-size: 8px;">WO</th><th style="font-size: 8px;">H</th><th style="font-size: 8px;">L</th><th style="font-size: 8px;">Work</th><th style="font-size: 8px;">OT</th><th style="font-size: 8px;">Ded</th></tr></thead><tbody>`;
 
                 const empGroups = {};
                 attendanceData.forEach(a => {
@@ -1861,6 +1888,8 @@ exports.generateAttendanceReport = async (req, res) => {
                 Object.values(empGroups).forEach(emp => {
                     let pCount = 0, aCount = 0, lCount = 0, hCount = 0, woCount = 0, hdCount = 0;
                     let totalWorkSec = 0, totalOTSec = 0;
+                    let totalDeduction = 0;
+                    let totalPermDeduction = 0;
 
                     htmlContent += `<tr><td style="font-weight: 600;">${emp.name}</td><td>${emp.emp_id}</td><td>${emp.branch || '-'}</td><td>${emp.dept || '-'}</td>`;
 
@@ -1871,18 +1900,26 @@ exports.generateAttendanceReport = async (req, res) => {
                         let statusClass = 'status-other';
 
                         if (status === 'Present') {
-                            const inT = record.punch_in && record.punch_in !== '00:00:00' ? record.punch_in.substring(0, 5) : '';
-                            const outT = record.punch_out && record.punch_out !== '00:00:00' ? record.punch_out.substring(0, 5) : '';
-                            code = `P${inT ? '<br>' + inT : ''}${outT ? '<br>' + outT : ''}`;
+                            code = record?.working_day_value !== undefined ? String(record.working_day_value) : '1.0';
                             statusClass = 'status-present';
-                            pCount++;
+                            if (code === '0.5') {
+                                hdCount++;
+                                totalDeduction += 0.5;
+                            } else {
+                                pCount++;
+                                if (record?.working_day_value !== undefined && record.working_day_value < 1.0) {
+                                    const penalty = 1.0 - record.working_day_value;
+                                    totalDeduction += penalty;
+                                    totalPermDeduction += penalty;
+                                }
+                            }
                         }
-                        else if (status === 'Absent') { code = 'A'; statusClass = 'status-absent'; aCount++; }
-                        else if (status === 'On Leave' || status === 'Permission') { code = 'L'; statusClass = 'status-leave'; lCount++; }
-                        else if (status === 'Week Off') { code = 'WO'; statusClass = 'status-other'; woCount++; }
+                        else if (status === 'Absent') { code = 'A'; statusClass = 'status-absent'; aCount++; totalDeduction += 1.0; }
+                        else if (status === 'On Leave' || status === 'Permission') { code = 'CL'; statusClass = 'status-leave'; lCount++; }
+                        else if (status === 'Week Off') { code = 'W'; statusClass = 'status-other'; woCount++; }
                         else if (status === 'Holiday') { code = 'H'; statusClass = 'status-other'; hCount++; }
                         else if (status === 'Half Day' || (record && record.working_day_value === 0.5)) {
-                            code = 'HD'; statusClass = 'status-other'; hdCount++;
+                            code = '0.5'; statusClass = 'status-other'; hdCount++; totalDeduction += 0.5;
                         }
 
                         if (record) {
@@ -1901,6 +1938,10 @@ exports.generateAttendanceReport = async (req, res) => {
 
                     const fmt = (s) => `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
 
+                    const waivedPermission = Math.min(totalPermDeduction, permissionLimit);
+                    const excessLeaves = Math.max(0, lCount - clLimit);
+                    totalDeduction = Math.max(0, totalDeduction - waivedPermission) + excessLeaves;
+
                     htmlContent += `
                         <td style="text-align: center; font-size: 8px;">${dates.length}</td>
                         <td style="text-align: center; font-size: 8px; font-weight: bold;">${pCount}</td>
@@ -1911,6 +1952,7 @@ exports.generateAttendanceReport = async (req, res) => {
                         <td style="text-align: center; font-size: 8px;">${lCount}</td>
                         <td style="text-align: center; font-size: 8px; color: #059669;">${fmt(totalWorkSec)}</td>
                         <td style="text-align: center; font-size: 8px; color: #2563EB;">${fmt(totalOTSec)}</td>
+                        <td style="text-align: center; font-size: 8px; color: #DC2626; font-weight: bold;">${totalDeduction > 0 ? totalDeduction.toFixed(2) : 0}</td>
                         </tr>
                     `;
                 });
@@ -2038,7 +2080,7 @@ exports.generateAttendanceReport = async (req, res) => {
             const headerRowContent = [
                 'Employee Name', 'Employee ID', 'Branch', 'Department', 'Designation',
                 ...dateHeaders,
-                'Total Days', 'Present', 'Absent', 'Half Day', 'Week Off', 'Non-Payable Week Off', 'Holiday', 'Leaves', 'Work Hrs', 'OT Hrs'
+                'Total Days', 'Present', 'Absent', 'Half Day', 'Week Off', 'Non-Payable Week Off', 'Holiday', 'Leaves', 'Work Hrs', 'OT Hrs', 'Deduction'
             ];
             const headerRow = worksheet.addRow(headerRowContent);
 
@@ -2069,6 +2111,8 @@ exports.generateAttendanceReport = async (req, res) => {
                 let present = 0, absent = 0, leaves = 0, halfDays = 0, weekOffs = 0, holidays = 0;
                 let totalWorkSeconds = 0;
                 let totalOTSeconds = 0;
+                let totalDeduction = 0;
+                let totalPermDeduction = 0;
 
                 const rowData = [emp.name, emp.emp_id, emp.branch, emp.dept, emp.designation];
 
@@ -2078,25 +2122,35 @@ exports.generateAttendanceReport = async (req, res) => {
                     let code = '-';
 
                     if (status === 'Present') {
-                        const inTime = formatExcelTime(record.punch_in);
-                        const outTime = formatExcelTime(record.punch_out);
-                        code = `P (${inTime}${(inTime && outTime) ? ' ,' : ''}${outTime})`;
-                        present++;
+                        code = record?.working_day_value !== undefined ? String(record.working_day_value) : '1.0';
+                        if (code === '0.5') {
+                            halfDays++;
+                            totalDeduction += 0.5;
+                        } else {
+                            present++;
+                            if (record?.working_day_value !== undefined && record.working_day_value < 1.0) {
+                                const penalty = 1.0 - record.working_day_value;
+                                totalDeduction += penalty;
+                                totalPermDeduction += penalty;
+                            }
+                        }
                     } else if (status === 'Absent') {
                         code = 'A';
                         absent++;
+                        totalDeduction += 1.0;
                     } else if (status === 'On Leave' || status === 'Permission') {
-                        code = 'L';
+                        code = 'CL';
                         leaves++;
                     } else if (status === 'Week Off') {
-                        code = 'WO';
+                        code = 'W';
                         weekOffs++;
                     } else if (status === 'Holiday') {
                         code = 'H';
                         holidays++;
                     } else if (status === 'Half Day' || (record && record.working_day_value === 0.5)) {
-                        code = 'HD';
+                        code = '0.5';
                         halfDays++;
+                        totalDeduction += 0.5;
                     }
 
                     // Accumulate totals
@@ -2120,6 +2174,10 @@ exports.generateAttendanceReport = async (req, res) => {
                     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
                 };
 
+                const waivedPermission = Math.min(totalPermDeduction, permissionLimit);
+                const excessLeaves = Math.max(0, leaves - clLimit);
+                totalDeduction = Math.max(0, totalDeduction - waivedPermission) + excessLeaves;
+
                 rowData.push(
                     dates.length, // Total Days
                     present,
@@ -2130,7 +2188,8 @@ exports.generateAttendanceReport = async (req, res) => {
                     holidays,
                     leaves,
                     formatDuration(totalWorkSeconds),
-                    formatDuration(totalOTSeconds)
+                    formatDuration(totalOTSeconds),
+                    totalDeduction > 0 ? parseFloat(totalDeduction.toFixed(2)) : 0
                 );
 
                 const row = worksheet.addRow(rowData);
@@ -2146,9 +2205,28 @@ exports.generateAttendanceReport = async (req, res) => {
 
                     // Conditional colors based on status code
                     const val = String(cell.value || '');
-                    if (val.startsWith('P')) cell.font = { color: { argb: '059669' }, size: 9 }; // Greenish
-                    if (val === 'A') cell.font = { color: { argb: 'DC2626' }, size: 9 }; // Red
-                    if (val === 'WO' || val === 'H') cell.font = { color: { argb: '2563EB' }, size: 9 }; // Blue
+                    if (colNumber > 5 && colNumber <= 5 + dates.length) {
+                        const numVal = parseFloat(val);
+                        if (!isNaN(numVal)) {
+                            cell.font = { color: { argb: 'FFFFFF' }, size: 9, bold: true };
+                            if (numVal === 0.5) {
+                                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F59E0B' } }; // Orange
+                            } else if (numVal < 1) {
+                                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1976D2' } }; // Blue for deductions
+                            } else {
+                                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '2E7D32' } }; // Dark Green
+                            }
+                        } else if (val === 'A') {
+                            cell.font = { color: { argb: 'DC2626' }, size: 9, bold: true };
+                            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF' } }; // White
+                        } else if (val === 'W' || val === 'H') {
+                            cell.font = { color: { argb: '000000' }, size: 9, bold: true };
+                            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF00' } }; // Yellow
+                        } else if (val === 'CL') {
+                            cell.font = { color: { argb: 'DC2626' }, size: 9, bold: true };
+                            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC0CB' } }; // Pink
+                        }
+                    }
                 });
             });
 

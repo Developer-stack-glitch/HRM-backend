@@ -1,4 +1,5 @@
 const ShiftRoster = require('../models/shiftRosterModel');
+const { sendNotification } = require('../utils/notificationHelper');
 
 const getRoster = async (req, res) => {
     try {
@@ -23,6 +24,15 @@ const assignShift = async (req, res) => {
         }
 
         await ShiftRoster.assignShift({ user_id, shift_id, roster_date });
+        
+        await sendNotification(req.app.get('io'), {
+            user_id: user_id,
+            type: 'shift_assigned',
+            title: 'New Shift Assigned',
+            message: `You have been assigned a new shift on ${new Date(roster_date).toLocaleDateString()}.`,
+            extra_data: { shift_id, roster_date }
+        });
+
         res.status(200).json({ message: 'Shift assigned successfully' });
     } catch (error) {
         console.error('Error assigning shift:', error);
@@ -38,6 +48,17 @@ const bulkAssign = async (req, res) => {
         }
 
         await ShiftRoster.bulkAssign(user_ids, shift_id, start_date, end_date);
+
+        for (const uid of user_ids) {
+            await sendNotification(req.app.get('io'), {
+                user_id: uid,
+                type: 'shift_assigned',
+                title: 'New Shifts Assigned',
+                message: `You have been assigned new shifts from ${new Date(start_date).toLocaleDateString()} to ${new Date(end_date).toLocaleDateString()}.`,
+                extra_data: { shift_id, start_date, end_date }
+            });
+        }
+
         res.status(200).json({ message: 'Bulk shift assignment completed' });
     } catch (error) {
         console.error('Error in bulk shift assignment:', error);
