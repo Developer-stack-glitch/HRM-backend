@@ -4,7 +4,12 @@ const Attendance = require('../models/attendanceModel');
 
 const createLeave = async (req, res) => {
     try {
-        const { employee_id, start_date, end_date, is_half_day, leave_type } = req.body;
+        let { employee_id, start_date, end_date, is_half_day, leave_type } = req.body;
+
+        // Convert is_half_day to actual boolean if it's a string from FormData
+        if (typeof is_half_day === 'string') {
+            is_half_day = is_half_day === 'true';
+        }
 
         // Block leave if attendance exists, but only for full-day leaves (not half-days or permissions)
         if (!is_half_day && leave_type !== 'Permission') {
@@ -17,7 +22,13 @@ const createLeave = async (req, res) => {
             }
         }
 
-        const leaveId = await Leave.create(req.body);
+        let data = { ...req.body, is_half_day };
+        if (req.files && req.files.length > 0) {
+            const urls = req.files.map(file => `/uploads/${file.filename}`);
+            data.document_url = JSON.stringify(urls);
+        }
+
+        const leaveId = await Leave.create(data);
 
         // Send Notification
         const io = req.app.get('socketio');

@@ -139,7 +139,7 @@ router.put('/holidays/:id', protect, holidayController.updateHoliday);
 router.delete('/holidays/:id', protect, holidayController.deleteHoliday);
 
 // --- Leave Routes ---
-router.post('/leaves/', protect, leaveController.createLeave);
+router.post('/leaves/', protect, upload.array('documents', 5), leaveController.createLeave);
 router.get('/leaves/', protect, leaveController.getLeaves);
 router.get('/leaves/generate-report', protect, leaveController.generateLeaveReport);
 router.put('/leaves/:id', protect, leaveController.updateLeave);

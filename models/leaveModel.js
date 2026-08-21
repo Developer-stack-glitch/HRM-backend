@@ -14,7 +14,8 @@ class Leave {
             contact_number = null,
             applied_by = null,
             start_time = null,
-            end_time = null
+            end_time = null,
+            document_url = null
         } = data;
 
         // Find the team lead for the employee's department
@@ -32,7 +33,7 @@ class Leave {
         }
 
         const [result] = await pool.execute(
-            'INSERT INTO leaves (employee_id, leave_type, start_date, end_date, reason, status, is_half_day, half_day_period, contact_number, applied_by, team_lead_id, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO leaves (employee_id, leave_type, start_date, end_date, reason, status, is_half_day, half_day_period, contact_number, applied_by, team_lead_id, start_time, end_time, document_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
                 employee_id,
                 leave_type,
@@ -46,7 +47,8 @@ class Leave {
                 applied_by || null,
                 team_lead_id,
                 start_time || null,
-                end_time || null
+                end_time || null,
+                document_url || null
             ]
         );
         return result.insertId;
@@ -119,12 +121,12 @@ class Leave {
             params.push(searchPattern, searchPattern, searchPattern);
         }
         if (startDate) {
-            conditions.push('l.start_date >= ?');
-            params.push(startDate);
+            conditions.push('(l.start_date >= ? OR DATE(l.created_at) >= ?)');
+            params.push(startDate, startDate);
         }
         if (endDate) {
-            conditions.push('l.end_date <= ?');
-            params.push(endDate);
+            conditions.push('(l.end_date <= ? OR DATE(l.created_at) <= ?)');
+            params.push(endDate, endDate);
         }
 
         // New Organization Filters
@@ -199,12 +201,12 @@ class Leave {
             countQueryParams.push(searchPattern, searchPattern, searchPattern);
         }
         if (startDate) {
-            countConditions.push('l.start_date >= ?');
-            countQueryParams.push(startDate);
+            countConditions.push('(l.start_date >= ? OR DATE(l.created_at) >= ?)');
+            countQueryParams.push(startDate, startDate);
         }
         if (endDate) {
-            countConditions.push('l.end_date <= ?');
-            countQueryParams.push(endDate);
+            countConditions.push('(l.end_date <= ? OR DATE(l.created_at) <= ?)');
+            countQueryParams.push(endDate, endDate);
         }
 
         const countWhere = ' WHERE ' + countConditions.join(' AND ');
