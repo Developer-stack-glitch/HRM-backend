@@ -521,6 +521,10 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
             ...a,
             date: dateStr,
             punches: [],
+            biometric_punches: [],
+            is_edited: (Number(a.is_edited) === 1 || a.is_edited === true) ? 1 : 0,
+            actual_punch_in: a.actual_punch_in || null,
+            actual_punch_out: a.actual_punch_out || null,
             branch_id: a.branch_id || a.branch,
             department_id: a.department_id || a.department,
             shift_id: rosterEntry ? rosterEntry.shift_id : (a.shift_id || a.shift),
@@ -570,6 +574,10 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
                     shift: user.shift_name || user.shift,
                     date: dateStr,
                     punches: [],
+                    biometric_punches: [],
+                    is_edited: 0,
+                    actual_punch_in: null,
+                    actual_punch_out: null,
                     status: 'Present',
                     employment_type: user.employment_type,
                     work_mode: user.work_location
@@ -582,6 +590,8 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
                     combinedData[key].is_rostered = true;
                 }
             }
+            if (!combinedData[key].biometric_punches) combinedData[key].biometric_punches = [];
+            combinedData[key].biometric_punches.push(log.time);
             combinedData[key].punches.push(log.time);
             combinedData[key].is_biometric = true;
         });
@@ -618,6 +628,10 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
                     shift: user.shift_name || user.shift,
                     date: dateStr,
                     punches: [],
+                    biometric_punches: [],
+                    is_edited: 0,
+                    actual_punch_in: null,
+                    actual_punch_out: null,
                     status: isFuture ? null : 'Absent',
                     employment_type: user.employment_type,
                     work_mode: user.work_location
@@ -635,9 +649,41 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     });
 
     const consolidated = await Promise.all(Object.values(combinedData).map(async group => {
-        const uniquePunches = [...new Set(group.punches.filter(p => p && p !== '00:00' && p !== '--:--'))].sort();
-        const punch_in = uniquePunches.length > 0 ? uniquePunches[0] : group.punch_in;
-        const punch_out = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : group.punch_out;
+        const uniqueBioPunches = [...new Set((group.biometric_punches || []).filter(p => p && p !== '00:00' && p !== '--:--'))].sort();
+        const uniquePunches = [...new Set((group.punches || []).filter(p => p && p !== '00:00' && p !== '--:--'))].sort();
+
+        let punch_in = null;
+        let punch_out = null;
+        let actual_punch_in = group.actual_punch_in || null;
+        let actual_punch_out = group.actual_punch_out || null;
+
+        // If biometric punches exist from device, they represent the original raw punch
+        if (!actual_punch_in && uniqueBioPunches.length > 0) {
+            actual_punch_in = uniqueBioPunches[0];
+        }
+        if (!actual_punch_out && uniqueBioPunches.length > 1) {
+            actual_punch_out = uniqueBioPunches[uniqueBioPunches.length - 1];
+        }
+
+        const isEdited = Number(group.is_edited) === 1 || group.is_edited === true;
+
+        if (isEdited) {
+            // Keep the admin edited punch times
+            punch_in = group.punch_in || (uniquePunches.length > 0 ? uniquePunches[0] : null);
+            punch_out = group.punch_out || (uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : null);
+            if (!actual_punch_in) {
+                actual_punch_in = uniqueBioPunches.length > 0 ? uniqueBioPunches[0] : punch_in;
+            }
+            if (!actual_punch_out) {
+                actual_punch_out = uniqueBioPunches.length > 1 ? uniqueBioPunches[uniqueBioPunches.length - 1] : punch_out;
+            }
+        } else {
+            punch_in = uniquePunches.length > 0 ? uniquePunches[0] : group.punch_in;
+            punch_out = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : group.punch_out;
+            if (!actual_punch_in) actual_punch_in = punch_in;
+            if (!actual_punch_out) actual_punch_out = punch_out;
+        }
+
         const { start: shiftStart, end: shiftEnd } = await getShiftTimes(group.shift);
 
         let late_punch_in = "00:00", late_punch_out = "00:00", early_punch_out = "00:00", total_hours = "00:00";
@@ -652,7 +698,17 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
         if (punch_in && punch_out) total_hours = calculateTotalHours(punch_in, punch_out);
 
         return enrichAttendanceRecord({
-            ...group, punch_in, punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status: group.status
+            ...group,
+            punch_in,
+            punch_out,
+            actual_punch_in,
+            actual_punch_out,
+            is_edited: isEdited ? 1 : 0,
+            late_punch_in,
+            late_punch_out,
+            early_punch_out,
+            total_hours,
+            status: group.status
         }, group.shift, allLeaves, allHolidays);
     }));
 
@@ -806,15 +862,23 @@ const normalizeDate = (dateStr) => {
 
 exports.saveAttendance = async (req, res) => {
     try {
-        const { user_id, date, punch_in, punch_out, status } = req.body;
+        const { user_id, date, punch_in, punch_out, status, actual_punch_in, actual_punch_out } = req.body;
 
         // Check if attendance already exists for this user and date
         const [existing] = await pool.execute(
-            'SELECT id FROM attendance WHERE user_id = ? AND date = ?',
+            'SELECT id, punch_in, punch_out, actual_punch_in, actual_punch_out FROM attendance WHERE user_id = ? AND date = ?',
             [user_id || null, date || null]
         );
 
-        // Removed existing record check to allow overwriting/editing
+        let resolvedActualIn = actual_punch_in || null;
+        let resolvedActualOut = actual_punch_out || null;
+        if (existing.length > 0) {
+            if (!resolvedActualIn) resolvedActualIn = existing[0].actual_punch_in || existing[0].punch_in || punch_in || null;
+            if (!resolvedActualOut) resolvedActualOut = existing[0].actual_punch_out || existing[0].punch_out || punch_out || null;
+        } else {
+            if (!resolvedActualIn) resolvedActualIn = punch_in || null;
+            if (!resolvedActualOut) resolvedActualOut = punch_out || null;
+        }
 
         const [users] = await pool.execute('SELECT shift, biometric_id, emp_id FROM users WHERE id = ?', [user_id || null]);
         if (users.length === 0) return res.status(404).json({ message: 'User not found' });
@@ -851,6 +915,8 @@ exports.saveAttendance = async (req, res) => {
             date,
             punch_in: punch_in || null,
             punch_out: punch_out || null,
+            actual_punch_in: resolvedActualIn,
+            actual_punch_out: resolvedActualOut,
             late_punch_in,
             late_punch_out,
             early_punch_out,
@@ -1465,7 +1531,7 @@ const processBiometricLogs = async (logs) => {
 exports.getAttendance = async (req, res) => {
     console.log('[AttendanceAPI] GET /attendance called');
     try {
-        const { startDate, endDate, userIds } = req.query;
+        const { startDate, endDate, userIds, page, limit, search, status, isEdited } = req.query;
         const userRole = req.user.role;
         const userId = req.user.id;
 
@@ -1475,6 +1541,52 @@ exports.getAttendance = async (req, res) => {
         }
 
         const attendanceData = await getAttendanceDataInternal(startDate, endDate, userId, userRole, targetUserIds);
+
+        // If pagination parameters (page or limit) are requested
+        if (page !== undefined || limit !== undefined) {
+            let filtered = attendanceData;
+
+            // 1. Status / Edited filter
+            if (isEdited === '1' || isEdited === 'true' || status === 'Edited') {
+                filtered = filtered.filter(record => Number(record.is_edited) === 1 || record.is_edited === true);
+            } else if (status && status !== 'All') {
+                filtered = filtered.filter(record => record.status === status);
+            }
+
+            // 2. Search query filter
+            if (search && search.trim()) {
+                const q = search.toLowerCase().trim();
+                filtered = filtered.filter(record => {
+                    const empName = (record.employee_name || '').toLowerCase();
+                    const empId = (record.emp_id || '').toLowerCase();
+                    const dept = (record.department || '').toLowerCase();
+                    const shift = (record.shift || '').toLowerCase();
+                    const st = (record.status || '').toLowerCase();
+                    const punchIn = (record.punch_in || '').toLowerCase();
+                    const punchOut = (record.punch_out || '').toLowerCase();
+                    return empName.includes(q) || empId.includes(q) || dept.includes(q) || shift.includes(q) || st.includes(q) || punchIn.includes(q) || punchOut.includes(q);
+                });
+            }
+
+            const total = filtered.length;
+            const editedCount = attendanceData.filter(record => Number(record.is_edited) === 1 || record.is_edited === true).length;
+            const pageNum = Math.max(1, parseInt(page) || 1);
+            const limitNum = Math.max(1, parseInt(limit) || 20);
+            const startIndex = (pageNum - 1) * limitNum;
+            const paginatedData = filtered.slice(startIndex, startIndex + limitNum);
+
+            return res.status(200).json({
+                data: paginatedData,
+                pagination: {
+                    total,
+                    page: pageNum,
+                    limit: limitNum,
+                    totalPages: Math.ceil(total / limitNum) || 1
+                },
+                editedCount
+            });
+        }
+
         res.status(200).json(attendanceData);
     } catch (error) {
         console.error('Error in getAttendance:', error);
@@ -1506,7 +1618,21 @@ exports.previewBiometricLogs = async (req, res) => {
 exports.updateAttendance = async (req, res) => {
     try {
         const { id } = req.params;
-        const { user_id, date, punch_in, punch_out, status } = req.body;
+        const { user_id, date, punch_in, punch_out, status, actual_punch_in, actual_punch_out } = req.body;
+
+        const [existing] = await pool.execute(
+            'SELECT id, punch_in, punch_out, actual_punch_in, actual_punch_out FROM attendance WHERE id = ?',
+            [id]
+        );
+        let resolvedActualIn = actual_punch_in || null;
+        let resolvedActualOut = actual_punch_out || null;
+        if (existing.length > 0) {
+            if (!resolvedActualIn) resolvedActualIn = existing[0].actual_punch_in || existing[0].punch_in || punch_in || null;
+            if (!resolvedActualOut) resolvedActualOut = existing[0].actual_punch_out || existing[0].punch_out || punch_out || null;
+        } else {
+            if (!resolvedActualIn) resolvedActualIn = punch_in || null;
+            if (!resolvedActualOut) resolvedActualOut = punch_out || null;
+        }
 
         const [users] = await pool.execute('SELECT shift, biometric_id, emp_id FROM users WHERE id = ?', [user_id || null]);
         if (users.length === 0) return res.status(404).json({ message: 'User not found' });
@@ -1543,6 +1669,8 @@ exports.updateAttendance = async (req, res) => {
             date,
             punch_in: punch_in || null,
             punch_out: punch_out || null,
+            actual_punch_in: resolvedActualIn,
+            actual_punch_out: resolvedActualOut,
             late_punch_in,
             late_punch_out,
             early_punch_out,

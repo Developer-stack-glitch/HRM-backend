@@ -2,10 +2,10 @@ const { pool } = require('../Config/dbConfig');
 
 class Attendance {
     static async create(data) {
-        const { user_id, date, punch_in, punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status, biometric_id, latitude_in, longitude_in, latitude_out, longitude_out, punch_in_location, punch_out_location, is_web_punch, total_break_time, is_edited } = data;
+        const { user_id, date, punch_in, punch_out, actual_punch_in, actual_punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status, biometric_id, latitude_in, longitude_in, latitude_out, longitude_out, punch_in_location, punch_out_location, is_web_punch, total_break_time, is_edited } = data;
         const [result] = await pool.execute(
-            'INSERT INTO attendance (user_id, date, punch_in, punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status, biometric_id, latitude_in, longitude_in, latitude_out, longitude_out, punch_in_location, punch_out_location, is_web_punch, total_break_time, is_edited) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [user_id || null, date || null, punch_in || null, punch_out || null, late_punch_in || null, late_punch_out || null, early_punch_out || null, total_hours || null, status || null, biometric_id || null, latitude_in || null, longitude_in || null, latitude_out || null, longitude_out || null, punch_in_location || null, punch_out_location || null, is_web_punch || 0, total_break_time || '00:00', is_edited || 0]
+            'INSERT INTO attendance (user_id, date, punch_in, punch_out, actual_punch_in, actual_punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status, biometric_id, latitude_in, longitude_in, latitude_out, longitude_out, punch_in_location, punch_out_location, is_web_punch, total_break_time, is_edited) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [user_id || null, date || null, punch_in || null, punch_out || null, actual_punch_in || null, actual_punch_out || null, late_punch_in || null, late_punch_out || null, early_punch_out || null, total_hours || null, status || null, biometric_id || null, latitude_in || null, longitude_in || null, latitude_out || null, longitude_out || null, punch_in_location || null, punch_out_location || null, is_web_punch || 0, total_break_time || '00:00', is_edited || 0]
         );
         return result.insertId;
     }
@@ -38,10 +38,10 @@ class Attendance {
     }
 
     static async update(id, data) {
-        const { date, punch_in, punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status, biometric_id, latitude_in, longitude_in, latitude_out, longitude_out, punch_in_location, punch_out_location, is_web_punch, total_break_time, is_edited } = data;
+        const { date, punch_in, punch_out, actual_punch_in, actual_punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status, biometric_id, latitude_in, longitude_in, latitude_out, longitude_out, punch_in_location, punch_out_location, is_web_punch, total_break_time, is_edited } = data;
         const [result] = await pool.execute(
-            'UPDATE attendance SET date = ?, punch_in = ?, punch_out = ?, late_punch_in = ?, late_punch_out = ?, early_punch_out = ?, total_hours = ?, status = ?, biometric_id = ?, latitude_in = ?, longitude_in = ?, latitude_out = ?, longitude_out = ?, punch_in_location = ?, punch_out_location = ?, is_web_punch = ?, total_break_time = ?, is_edited = ? WHERE id = ?',
-            [date || null, punch_in || null, punch_out || null, late_punch_in || null, late_punch_out || null, early_punch_out || null, total_hours || null, status || null, biometric_id || null, latitude_in || null, longitude_in || null, latitude_out || null, longitude_out || null, punch_in_location || null, punch_out_location || null, is_web_punch || 0, total_break_time || '00:00', is_edited || 0, id || null]
+            'UPDATE attendance SET date = ?, punch_in = ?, punch_out = ?, actual_punch_in = ?, actual_punch_out = ?, late_punch_in = ?, late_punch_out = ?, early_punch_out = ?, total_hours = ?, status = ?, biometric_id = ?, latitude_in = ?, longitude_in = ?, latitude_out = ?, longitude_out = ?, punch_in_location = ?, punch_out_location = ?, is_web_punch = ?, total_break_time = ?, is_edited = ? WHERE id = ?',
+            [date || null, punch_in || null, punch_out || null, actual_punch_in || null, actual_punch_out || null, late_punch_in || null, late_punch_out || null, early_punch_out || null, total_hours || null, status || null, biometric_id || null, latitude_in || null, longitude_in || null, latitude_out || null, longitude_out || null, punch_in_location || null, punch_out_location || null, is_web_punch || 0, total_break_time || '00:00', is_edited || 0, id || null]
         );
         return result.affectedRows > 0;
     }

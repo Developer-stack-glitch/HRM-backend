@@ -47,6 +47,18 @@ class Regularisation {
             const condition = ' AND r.date BETWEEN ? AND ?';
             query += condition; countQuery += condition;
             params.push(filters.startDate, filters.endDate);
+        } else if (filters.startDate) {
+            const condition = ' AND r.date >= ?';
+            query += condition; countQuery += condition;
+            params.push(filters.startDate);
+        } else if (filters.endDate) {
+            const condition = ' AND r.date <= ?';
+            query += condition; countQuery += condition;
+            params.push(filters.endDate);
+        } else if (filters.date) {
+            const condition = ' AND r.date = ?';
+            query += condition; countQuery += condition;
+            params.push(filters.date);
         }
         if (filters.search) {
             const condition = ' AND (u.employee_name LIKE ? OR u.emp_id LIKE ? OR r.reason LIKE ?)';
