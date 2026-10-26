@@ -12,15 +12,18 @@ class Regularisation {
 
     static async getAll(filters = {}) {
         let query = `
-            SELECT r.*, u.employee_name, u.emp_id, u.designation, u.department, u.branch, u.reporting_manager
+            SELECT r.*, u.employee_name, u.emp_id, u.designation, u.department, u.branch, u.reporting_manager,
+                   a.employee_name as approved_by_name, a.emp_id as approved_by_emp_id
             FROM regularisations r
             JOIN users u ON r.user_id = u.id
+            LEFT JOIN users a ON r.approved_by = a.id
             WHERE 1=1
         `;
         let countQuery = `
             SELECT COUNT(*) as total
             FROM regularisations r
             JOIN users u ON r.user_id = u.id
+            LEFT JOIN users a ON r.approved_by = a.id
             WHERE 1=1
         `;
         const params = [];
@@ -61,10 +64,10 @@ class Regularisation {
             params.push(filters.date);
         }
         if (filters.search) {
-            const condition = ' AND (u.employee_name LIKE ? OR u.emp_id LIKE ? OR r.reason LIKE ?)';
+            const condition = ' AND (u.employee_name LIKE ? OR u.emp_id LIKE ? OR r.reason LIKE ? OR a.employee_name LIKE ?)';
             query += condition; countQuery += condition;
             const searchParam = `%${filters.search}%`;
-            params.push(searchParam, searchParam, searchParam);
+            params.push(searchParam, searchParam, searchParam, searchParam);
         }
 
         query += ' ORDER BY r.date DESC, r.created_at DESC';
@@ -93,7 +96,14 @@ class Regularisation {
     }
 
     static async getById(id) {
-        const [rows] = await pool.execute('SELECT * FROM regularisations WHERE id = ?', [id]);
+        const [rows] = await pool.execute(`
+            SELECT r.*, u.employee_name, u.emp_id, u.designation, u.department, u.branch, u.reporting_manager,
+                   a.employee_name as approved_by_name, a.emp_id as approved_by_emp_id
+            FROM regularisations r
+            JOIN users u ON r.user_id = u.id
+            LEFT JOIN users a ON r.approved_by = a.id
+            WHERE r.id = ?
+        `, [id]);
         return rows[0];
     }
 

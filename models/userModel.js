@@ -422,4 +422,9 @@ const User = {
     }
 };
 
-module.exports = { User, USER_COLUMNS };
+User.User = User;
+User.USER_COLUMNS = USER_COLUMNS;
+
+module.exports = User;
+module.exports.User = User;
+module.exports.USER_COLUMNS = USER_COLUMNS;

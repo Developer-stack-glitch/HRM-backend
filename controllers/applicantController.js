@@ -446,6 +446,24 @@ const requestDocuments = async (req, res) => {
     }
 };
 
+// @desc    Get all interviews
+// @route   GET /api/applicants/interviews/all
+// @access  Private/Admin
+const getInterviews = async (req, res) => {
+    try {
+        const [rows] = await pool.execute(`
+            SELECT i.*, a.name as applicant_name, a.email as applicant_email, a.phone as applicant_phone, j.title as job_title, j.department
+            FROM interviews i
+            JOIN applicants a ON i.applicant_id = a.id
+            LEFT JOIN jobs j ON a.job_id = j.id
+            ORDER BY i.interview_date ASC, i.interview_time ASC
+        `);
+        res.status(200).json(rows);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getApplicants,
     getApplicantsByJob,
@@ -454,5 +472,6 @@ module.exports = {
     deleteApplicant,
     scheduleInterview,
     sendOfferLetter,
-    requestDocuments
+    requestDocuments,
+    getInterviews
 };

@@ -3,6 +3,7 @@ const BiometricLog = require('../models/biometricLogModel');
 const WeekOff = require('../models/weekoffModel');
 const CompanyWeekOff = require('../models/companyWeekoffModel');
 const Device = require('../models/deviceModel');
+const { User } = require('../models/userModel');
 const { pool } = require('../Config/dbConfig');
 const axios = require('axios');
 const puppeteer = require('puppeteer');
@@ -1064,6 +1065,10 @@ exports.getTodayStatus = async (req, res) => {
             [date]
         );
 
+        if (attn && attn.total_break_time && typeof attn.total_break_time === 'string' && attn.total_break_time.startsWith('-')) {
+            attn.total_break_time = '00:00:00';
+        }
+
         res.json({
             status: activeBreak.length > 0 ? 'on_break' : (attn.punch_out ? 'clocked_out' : 'clocked_in'),
             attendance: attn,
@@ -1300,7 +1305,6 @@ exports.endBreak = async (req, res) => {
         const { user_id } = req.body;
         const date = getISTDate();
         const break_end_str = getISTDateTime();
-        const break_end = new Date(); // Use current JS Date for diff
 
         const [attendance] = await pool.execute(
             'SELECT id FROM attendance WHERE user_id = ? AND date = ?',
@@ -1323,8 +1327,21 @@ exports.endBreak = async (req, res) => {
         }
 
         const breakRecord = active[0];
-        const start = new Date(breakRecord.break_start);
-        const durationSecondsTotal = Math.floor((break_end - start) / 1000);
+
+        // Safely parse datetime string into epoch milliseconds (IST / +05:30)
+        const parseISTtoEpoch = (str) => {
+            if (!str) return 0;
+            if (str instanceof Date) return str.getTime();
+            const s = String(str).trim();
+            const iso = s.includes('T') ? s : s.replace(' ', 'T') + '+05:30';
+            const parsed = new Date(iso);
+            return isNaN(parsed.getTime()) ? new Date(s).getTime() : parsed.getTime();
+        };
+
+        const startMs = parseISTtoEpoch(breakRecord.break_start);
+        const endMs = parseISTtoEpoch(break_end_str);
+        const durationSecondsTotal = Math.max(0, Math.floor((endMs - startMs) / 1000));
+
         const h = Math.floor(durationSecondsTotal / 3600);
         const m = Math.floor((durationSecondsTotal % 3600) / 60);
         const s = durationSecondsTotal % 60;
@@ -1342,19 +1359,20 @@ exports.endBreak = async (req, res) => {
 
         let totalSeconds = 0;
         allBreaks.forEach(b => {
-            if (b.break_duration) {
+            if (b.break_duration && !b.break_duration.startsWith('-')) {
                 const parts = b.break_duration.split(':').map(Number);
                 if (parts.length === 3) {
-                    totalSeconds += parts[0] * 3600 + parts[1] * 60 + parts[2];
+                    totalSeconds += Math.max(0, parts[0]) * 3600 + Math.max(0, parts[1]) * 60 + Math.max(0, parts[2]);
                 } else if (parts.length === 2) {
-                    totalSeconds += parts[0] * 3600 + parts[1] * 60;
+                    totalSeconds += Math.max(0, parts[0]) * 3600 + Math.max(0, parts[1]) * 60;
                 }
             }
         });
 
-        const th = Math.floor(totalSeconds / 3600);
-        const tm = Math.floor((totalSeconds % 3600) / 60);
-        const ts = totalSeconds % 60;
+        const safeSecs = Math.max(0, totalSeconds);
+        const th = Math.floor(safeSecs / 3600);
+        const tm = Math.floor((safeSecs % 3600) / 60);
+        const ts = safeSecs % 60;
         const totalBreakStr = `${th.toString().padStart(2, '0')}:${tm.toString().padStart(2, '0')}:${ts.toString().padStart(2, '0')}`;
 
         await pool.execute(
@@ -1373,7 +1391,7 @@ const processBiometricLogs = async (logs) => {
     if (!logs || logs.length === 0) return [];
 
     // Fetch all users to match biometric_id
-    const users = await require('../models/userModel').getAll();
+    const users = await User.getAll();
     const userMap = {};
     users.forEach(u => {
         const fetchId = u.biometric_id || u.emp_id;
@@ -1724,7 +1742,7 @@ exports.syncBiometricLogs = async (req, res) => {
             await BiometricLog.createBulk(summarizedLogs);
         }
 
-        const users = await require('../models/userModel').getAll();
+        const users = await User.getAll();
         const userMap = {};
         const userByIdMap = {};
         users.forEach(u => {
@@ -1768,6 +1786,13 @@ exports.syncBiometricLogs = async (req, res) => {
 
             if (existing.length > 0) {
                 const attn = existing[0];
+
+                // If record was manually modified by an Admin, preserve the manual edit and do not overwrite
+                if (Number(attn.is_edited) === 1 || attn.is_edited === true) {
+                    skippedCount++;
+                    continue;
+                }
+
                 const allPunches = [...punches];
                 if (attn.punch_in && attn.punch_in !== '00:00') allPunches.push(attn.punch_in);
                 if (attn.punch_out && attn.punch_out !== '00:00') allPunches.push(attn.punch_out);

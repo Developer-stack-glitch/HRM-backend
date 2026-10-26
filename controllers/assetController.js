@@ -72,6 +72,7 @@ const getAssets = async (req, res) => {
             remarks: a.remarks,
             created_at: a.created_at,
             updated_at: a.updated_at,
+            assigned_date: a.assigned_date || (a.assigned_to ? a.updated_at || a.created_at : null),
             assignedTo: a.assigned_to ? {
                 id: a.assigned_to,
                 name: a.assigned_user_name,
@@ -270,11 +271,11 @@ const getMyAssets = async (req, res) => {
 
 const getAssetAnalytics = async (req, res) => {
     try {
-        const { startDate, endDate } = req.query;
+        const { startDate, endDate, category } = req.query;
         if (!startDate || !endDate) {
             return res.status(400).json({ message: 'StartDate and EndDate are required' });
         }
-        const analytics = await Asset.getAssetAnalytics({ startDate, endDate });
+        const analytics = await Asset.getAssetAnalytics({ startDate, endDate, category });
         res.status(200).json(analytics);
     } catch (error) {
         res.status(500).json({ message: error.message });

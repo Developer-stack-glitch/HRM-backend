@@ -8,6 +8,7 @@ require('dotenv').config();
 const { pool } = require('./Config/dbConfig');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
+// Server initialization
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -47,8 +48,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Static folder for uploads
+// Static folder for uploads - support both /api/uploads and /uploads
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 
 // Database connection test

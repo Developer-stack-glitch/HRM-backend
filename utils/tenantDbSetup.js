@@ -206,6 +206,8 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 date DATE NOT NULL,
                 punch_in TIME,
                 punch_out TIME,
+                actual_punch_in TIME DEFAULT NULL,
+                actual_punch_out TIME DEFAULT NULL,
                 late_punch_in VARCHAR(10),
                 late_punch_out VARCHAR(10),
                 early_punch_out VARCHAR(10),
@@ -219,6 +221,7 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 punch_out_location TEXT,
                 is_web_punch TINYINT(1) DEFAULT 0,
                 total_break_time VARCHAR(10) DEFAULT '00:00',
+                is_edited TINYINT(1) DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
@@ -376,6 +379,7 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 remarks TEXT,
                 status VARCHAR(50) DEFAULT 'Available',
                 assigned_to INT,
+                assigned_date DATETIME NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (category_id) REFERENCES asset_categories(id) ON DELETE SET NULL,

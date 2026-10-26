@@ -4,6 +4,7 @@ const Organization = require('../models/organizationModel');
 const { pool } = require('../Config/dbConfig');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
+const { sendOnboardingEmails, generateRandomPassword } = require('../utils/onboardingEmail');
 
 const createUser = async (req, res) => {
     try {
@@ -62,18 +63,29 @@ const createUser = async (req, res) => {
             }
         }
 
-        // 4. Prevent duplicate Employee ID or Biometric ID
+        // 4. Prevent duplicate Employee ID, Biometric ID, and Office Mail ID
         if (userData.emp_id) {
-            const [existingEmpId] = await pool.execute('SELECT id FROM users WHERE emp_id = ?', [userData.emp_id]);
+            const [existingEmpId] = await pool.execute('SELECT id, employee_name FROM users WHERE emp_id = ?', [userData.emp_id.toString().trim()]);
             if (existingEmpId.length > 0) {
-                return res.status(400).json({ message: `Employee ID "${userData.emp_id}" is already assigned to another staff.` });
+                const owner = existingEmpId[0].employee_name ? ` (assigned to ${existingEmpId[0].employee_name})` : '';
+                return res.status(400).json({ message: `Employee ID "${userData.emp_id}" is already assigned to another staff${owner}.` });
             }
         }
 
         if (userData.biometric_id) {
-            const [existingBioId] = await pool.execute('SELECT id FROM users WHERE biometric_id = ?', [userData.biometric_id]);
+            const [existingBioId] = await pool.execute('SELECT id, employee_name FROM users WHERE biometric_id = ?', [userData.biometric_id.toString().trim()]);
             if (existingBioId.length > 0) {
-                return res.status(400).json({ message: `Biometric ID "${userData.biometric_id}" is already assigned to another staff.` });
+                const owner = existingBioId[0].employee_name ? ` (assigned to ${existingBioId[0].employee_name})` : '';
+                return res.status(400).json({ message: `Biometric ID "${userData.biometric_id}" is already assigned to another staff${owner}.` });
+            }
+        }
+
+        const mailToCheck = (userData.off_mail_id || userData.email || '').toString().trim();
+        if (mailToCheck) {
+            const [existingMail] = await pool.execute('SELECT id, employee_name FROM users WHERE off_mail_id = ? OR email = ?', [mailToCheck, mailToCheck]);
+            if (existingMail.length > 0) {
+                const owner = existingMail[0].employee_name ? ` (assigned to ${existingMail[0].employee_name})` : '';
+                return res.status(400).json({ message: `Office Mail ID "${mailToCheck}" is already registered to another staff${owner}.` });
             }
         }
 
@@ -90,8 +102,30 @@ const createUser = async (req, res) => {
             }
         }
 
+        // Auto-generate random alphanumeric password (letters & numbers) if not provided or if default
+        if (!userData.password || userData.password === 'password123' || userData.password === 'acte@123') {
+            userData.password = generateRandomPassword(10);
+        }
+        const rawPassword = userData.password;
+
         const userId = await User.create(userData);
-        res.status(201).json({ message: 'User created successfully', userId });
+
+        // Dispatch onboarding welcome email with credentials to both official and personal email addresses
+        let emailResults = [];
+        try {
+            const emailDispatch = await sendOnboardingEmails({ userId, rawPassword });
+            if (emailDispatch && emailDispatch.results) {
+                emailResults = emailDispatch.results;
+            }
+        } catch (emailErr) {
+            console.error('Non-blocking onboarding email error:', emailErr);
+        }
+
+        res.status(201).json({ 
+            message: 'User created successfully', 
+            userId,
+            emailDispatched: emailResults
+        });
     } catch (error) {
         console.error('Error creating user:', error);
         let message = 'Error creating user';
@@ -312,18 +346,29 @@ const updateUser = async (req, res) => {
             }
         }
 
-        // 4. Prevent duplicate Employee ID or Biometric ID (excluding current user)
+        // 4. Prevent duplicate Employee ID, Biometric ID, or Office Mail ID (excluding current user)
         if (userData.emp_id) {
-            const [existingEmpId] = await pool.execute('SELECT id FROM users WHERE emp_id = ? AND id != ?', [userData.emp_id, id]);
+            const [existingEmpId] = await pool.execute('SELECT id, employee_name FROM users WHERE emp_id = ? AND id != ?', [userData.emp_id.toString().trim(), id]);
             if (existingEmpId.length > 0) {
-                return res.status(400).json({ message: `Employee ID "${userData.emp_id}" is already assigned to another staff.` });
+                const owner = existingEmpId[0].employee_name ? ` (assigned to ${existingEmpId[0].employee_name})` : '';
+                return res.status(400).json({ message: `Employee ID "${userData.emp_id}" is already assigned to another staff${owner}.` });
             }
         }
 
         if (userData.biometric_id) {
-            const [existingBioId] = await pool.execute('SELECT id FROM users WHERE biometric_id = ? AND id != ?', [userData.biometric_id, id]);
+            const [existingBioId] = await pool.execute('SELECT id, employee_name FROM users WHERE biometric_id = ? AND id != ?', [userData.biometric_id.toString().trim(), id]);
             if (existingBioId.length > 0) {
-                return res.status(400).json({ message: `Biometric ID "${userData.biometric_id}" is already assigned to another staff.` });
+                const owner = existingBioId[0].employee_name ? ` (assigned to ${existingBioId[0].employee_name})` : '';
+                return res.status(400).json({ message: `Biometric ID "${userData.biometric_id}" is already assigned to another staff${owner}.` });
+            }
+        }
+
+        const mailToCheck = (userData.off_mail_id || userData.email || '').toString().trim();
+        if (mailToCheck) {
+            const [existingMail] = await pool.execute('SELECT id, employee_name FROM users WHERE (off_mail_id = ? OR email = ?) AND id != ?', [mailToCheck, mailToCheck, id]);
+            if (existingMail.length > 0) {
+                const owner = existingMail[0].employee_name ? ` (assigned to ${existingMail[0].employee_name})` : '';
+                return res.status(400).json({ message: `Office Mail ID "${mailToCheck}" is already registered to another staff${owner}.` });
             }
         }
 
@@ -810,6 +855,52 @@ const bulkUploadUsers = async (req, res) => {
     }
 };
 
+const checkDuplicate = async (req, res) => {
+    try {
+        const { field, value, excludeId } = req.query;
+        if (!field || !value || !value.toString().trim()) {
+            return res.status(200).json({ exists: false });
+        }
+
+        const trimmedValue = value.toString().trim();
+        let query = '';
+        let params = [];
+
+        if (field === 'emp_id') {
+            query = 'SELECT id, employee_name FROM users WHERE emp_id = ?';
+            params.push(trimmedValue);
+        } else if (field === 'biometric_id') {
+            query = 'SELECT id, employee_name FROM users WHERE biometric_id = ?';
+            params.push(trimmedValue);
+        } else if (field === 'off_mail_id' || field === 'email') {
+            query = 'SELECT id, employee_name FROM users WHERE off_mail_id = ? OR email = ?';
+            params.push(trimmedValue, trimmedValue);
+        } else {
+            return res.status(400).json({ message: 'Invalid field for duplicate check' });
+        }
+
+        if (excludeId) {
+            query += ' AND id != ?';
+            params.push(excludeId);
+        }
+
+        const [rows] = await pool.execute(query, params);
+        if (rows.length > 0) {
+            const label = field === 'emp_id' ? 'Employee ID' : field === 'biometric_id' ? 'Biometric ID' : 'Office Mail ID';
+            const owner = rows[0].employee_name ? ` (assigned to ${rows[0].employee_name})` : '';
+            return res.status(200).json({
+                exists: true,
+                message: `${label} "${trimmedValue}" is already assigned${owner}.`
+            });
+        }
+
+        return res.status(200).json({ exists: false });
+    } catch (error) {
+        console.error('Error checking duplicate:', error);
+        res.status(500).json({ message: 'Error checking duplicate', error: error.message });
+    }
+};
+
 module.exports = {
     createUser,
     getUsers,
@@ -821,5 +912,6 @@ module.exports = {
     getUserAttendance,
     downloadBulkTemplate,
     downloadReferenceIds,
-    bulkUploadUsers
+    bulkUploadUsers,
+    checkDuplicate
 };

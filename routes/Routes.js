@@ -34,6 +34,7 @@ const notificationController = require('../controllers/notificationController');
 const regularisationController = require('../controllers/regularisationController');
 const shiftRosterController = require('../controllers/shiftRosterController');
 const incentiveController = require('../controllers/incentiveController');
+const helpdeskController = require('../controllers/helpdeskController');
 
 // --- Upload Configurations ---
 const assetUploadFields = [
@@ -76,6 +77,7 @@ router.get('/users/user-attendance', protect, userController.getUserAttendance);
 router.get('/users/bulk-template', protect, userController.downloadBulkTemplate);
 router.get('/users/reference-ids', protect, userController.downloadReferenceIds);
 router.post('/users/bulk-upload', protect, upload.single('file'), userController.bulkUploadUsers);
+router.get('/users/check-duplicate', protect, userController.checkDuplicate);
 router.get('/users/', protect, userController.getUsers);
 router.get('/users/:id', protect, userController.getUserById);
 router.put('/users/:id', protect, upload.fields(documentFields), userController.updateUser);
@@ -229,6 +231,7 @@ router.delete('/jobs/:id', jobController.deleteJob);
 
 // --- Applicant Routes ---
 router.get('/applicants/', applicantController.getApplicants);
+router.get('/applicants/interviews/all', applicantController.getInterviews);
 router.post('/applicants/', upload.single('resume'), applicantController.createApplicant);
 router.get('/applicants/job/:jobId', applicantController.getApplicantsByJob);
 router.put('/applicants/:id/status', applicantController.updateApplicantStatus);
@@ -305,5 +308,15 @@ router.delete('/role-permissions/:role', rolePermissionController.deleteRoleFull
 router.get('/notifications/my', protect, notificationController.getMyNotifications);
 router.patch('/notifications/:id/read', protect, notificationController.markRead);
 router.patch('/notifications/read-all', protect, notificationController.markAllRead);
+
+// --- Helpdesk Routes ---
+router.get('/helpdesk', helpdeskController.getTickets);
+router.get('/helpdesk/stats', helpdeskController.getStats);
+router.post('/helpdesk', helpdeskController.createTicket);
+router.put('/helpdesk/:id/status', helpdeskController.updateTicketStatus);
+router.patch('/helpdesk/:id/status', helpdeskController.updateTicketStatus);
+router.put('/helpdesk/:id/assign', helpdeskController.assignTicket);
+router.patch('/helpdesk/:id/assign', helpdeskController.assignTicket);
+router.delete('/helpdesk/:id', helpdeskController.deleteTicket);
 
 module.exports = router;

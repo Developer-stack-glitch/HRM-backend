@@ -31,8 +31,8 @@ const Asset = {
 
         if (category && category !== 'All') {
             const catArray = Array.isArray(category) ? category : category.split(',');
-            filterWhere.push(`c.name IN (${catArray.map(() => '?').join(',')})`);
-            filterParams.push(...catArray);
+            filterWhere.push(`(c.name IN (${catArray.map(() => '?').join(',')}) OR a.category_id IN (${catArray.map(() => '?').join(',')}))`);
+            filterParams.push(...catArray, ...catArray);
         }
 
         if (status && status !== 'All') {
@@ -144,20 +144,22 @@ const Asset = {
         const {
             asset_ref, name, category_id, serial, purchase_date, cost, status,
             branch, asset_image, specification, rental_type, vendor,
-            warranty_in_month, invoice, remarks, assigned_to
+            warranty_in_month, invoice, remarks, assigned_to, assigned_date
         } = assetData;
+
+        const effectiveAssignedDate = assigned_date || (assigned_to ? new Date() : null);
 
         const [result] = await pool.execute(
             `INSERT INTO assets (
                 asset_ref, name, category_id, serial, purchase_date, cost, status,
                 branch, asset_image, specification, rental_type, vendor,
-                warranty_in_month, invoice, remarks, assigned_to
+                warranty_in_month, invoice, remarks, assigned_to, assigned_date
              ) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 asset_ref, name, category_id || null, serial, purchase_date || null, cost || null, status || 'Available',
                 branch || null, asset_image || null, specification || null, rental_type || null, vendor || null,
-                warranty_in_month || null, invoice || null, remarks || null, assigned_to || null
+                warranty_in_month || null, invoice || null, remarks || null, assigned_to || null, effectiveAssignedDate
             ]
         );
         const newAssetId = result.insertId;
@@ -179,10 +181,10 @@ const Asset = {
     },
 
     recordAssetHistory: async (assetId, data) => {
-        const { user_id, history_type, remarks } = data;
+        const { user_id, history_type, remarks, assigned_from } = data;
         await pool.execute(
-            'INSERT INTO asset_histories (asset_id, user_id, history_type, remarks) VALUES (?, ?, ?, ?)',
-            [assetId, user_id || null, history_type, remarks || null]
+            'INSERT INTO asset_histories (asset_id, user_id, history_type, remarks, assigned_from) VALUES (?, ?, ?, ?, ?)',
+            [assetId, user_id || null, history_type, remarks || null, assigned_from || new Date()]
         );
     },
 
@@ -190,8 +192,13 @@ const Asset = {
         const fields = [];
         const values = [];
 
+        // Auto manage assigned_date if assigned_to is updated
+        if (assetData.assigned_to !== undefined && assetData.assigned_date === undefined) {
+            assetData.assigned_date = assetData.assigned_to ? new Date() : null;
+        }
+
         [
-            'name', 'category_id', 'serial', 'purchase_date', 'cost', 'status', 'assigned_to',
+            'name', 'category_id', 'serial', 'purchase_date', 'cost', 'status', 'assigned_to', 'assigned_date',
             'branch', 'asset_image', 'specification', 'rental_type', 'vendor',
             'warranty_in_month', 'invoice', 'remarks'
         ].forEach(key => {
@@ -267,52 +274,72 @@ const Asset = {
     },
 
     getAssetAnalytics: async (filters = {}) => {
-        const { startDate, endDate } = filters;
+        const { startDate, endDate, category } = filters;
+
+        let categoryClauseAsset = '';
+        let categoryClauseHistory = '';
+        let categoryClauseQuery = '';
+        const catParams = [];
+
+        if (category && category !== 'All') {
+            const catArray = Array.isArray(category) ? category : category.split(',');
+            categoryClauseAsset = ` AND (c.name IN (${catArray.map(() => '?').join(',')}) OR a.category_id IN (${catArray.map(() => '?').join(',')}))`;
+            categoryClauseHistory = ` AND (c.name IN (${catArray.map(() => '?').join(',')}) OR a.category_id IN (${catArray.map(() => '?').join(',')}))`;
+            categoryClauseQuery = ` AND (c.name IN (${catArray.map(() => '?').join(',')}) OR q.asset_category_id IN (${catArray.map(() => '?').join(',')}))`;
+            catParams.push(...catArray, ...catArray);
+        }
 
         // 1. Lost/Damaged events
-        const [lostDamaged] = await pool.execute(`
+        const [lostDamaged] = await pool.query(`
             SELECT h.*, a.name as asset_name, c.name as category_name
             FROM asset_histories h
             JOIN assets a ON h.asset_id = a.id
             LEFT JOIN asset_categories c ON a.category_id = c.id
             WHERE h.history_type IN ('Lost', 'Damaged')
             AND DATE(h.assigned_from) BETWEEN ? AND ?
+            ${categoryClauseAsset}
             ORDER BY h.assigned_from DESC
-        `, [startDate, endDate]);
+        `, [startDate, endDate, ...catParams]);
 
         // 2. Asset Requests by User
-        const [requests] = await pool.execute(`
+        const [requests] = await pool.query(`
             SELECT q.*, u.name as user_name, c.name as category_name
             FROM asset_query q
             JOIN users u ON q.user_id = u.id
             LEFT JOIN asset_categories c ON q.asset_category_id = c.id
             WHERE DATE(q.created_at) BETWEEN ? AND ?
+            ${categoryClauseQuery}
             ORDER BY q.created_at DESC
-        `, [startDate, endDate]);
+        `, [startDate, endDate, ...catParams]);
 
         // 3. Assignments vs Repairs (Chart Data)
-        const [chartData] = await pool.execute(`
+        const [chartData] = await pool.query(`
             SELECT 
                 DATE(h.assigned_from) as date,
                 SUM(CASE WHEN h.history_type = 'Assignment' THEN 1 ELSE 0 END) as assignments,
                 SUM(CASE WHEN h.history_type = 'Repair' THEN 1 ELSE 0 END) as repairs
             FROM asset_histories h
+            JOIN assets a ON h.asset_id = a.id
+            LEFT JOIN asset_categories c ON a.category_id = c.id
             WHERE DATE(h.assigned_from) BETWEEN ? AND ?
+            ${categoryClauseHistory}
             GROUP BY DATE(h.assigned_from)
             ORDER BY DATE(h.assigned_from) ASC
-        `, [startDate, endDate]);
+        `, [startDate, endDate, ...catParams]);
 
         // 4. Request Stats (Approved vs Requested)
-        const [requestChartData] = await pool.execute(`
+        const [requestChartData] = await pool.query(`
             SELECT 
-                DATE(created_at) as date,
+                DATE(q.created_at) as date,
                 COUNT(*) as requested,
-                SUM(CASE WHEN status = 'Approved' THEN 1 ELSE 0 END) as approved
-            FROM asset_query
-            WHERE DATE(created_at) BETWEEN ? AND ?
-            GROUP BY DATE(created_at)
-            ORDER BY DATE(created_at) ASC
-        `, [startDate, endDate]);
+                SUM(CASE WHEN q.status = 'Approved' THEN 1 ELSE 0 END) as approved
+            FROM asset_query q
+            LEFT JOIN asset_categories c ON q.asset_category_id = c.id
+            WHERE DATE(q.created_at) BETWEEN ? AND ?
+            ${categoryClauseQuery}
+            GROUP BY DATE(q.created_at)
+            ORDER BY DATE(q.created_at) ASC
+        `, [startDate, endDate, ...catParams]);
 
         return {
             lostDamaged,

@@ -511,15 +511,33 @@ const payrollRunController = {
 
     getAnalytics: async (req, res) => {
         try {
-            const { company_id, startDate, endDate, branch, department, shift } = req.query;
-            const status = 'Completed'; // Only finalized payrolls
+            const company_id = req.query.company_id || req.user?.company;
+            const { startDate: qStart, endDate: qEnd, period, branch, department, shift } = req.query;
 
-            // 1. Fetch Aggregated Payroll Items for the current range
+            // Latest completed payroll cycle in the database
+            const [latestCycleRows] = await pool.execute(`
+                SELECT period_start, period_end, payroll_month, batch_name
+                FROM payroll_runs
+                WHERE (company_id = ? OR ? IS NULL)
+                  AND status = 'Completed'
+                ORDER BY period_end DESC, id DESC
+                LIMIT 1
+            `, [company_id || null, company_id || null]);
+            const latestCycle = latestCycleRows[0] || null;
+
+            let startDate = qStart;
+            let endDate = qEnd;
+            if (!startDate && !endDate && period !== 'all' && latestCycle) {
+                startDate = latestCycle.period_start;
+                endDate = latestCycle.period_end;
+            }
+
+            // 1. Fetch Aggregated Payroll Items for the current range (overlapping periods)
             const [baseItems] = await pool.execute(`
                 SELECT 
                     pi.*, 
                     u.employee_name, u.emp_id, u.off_mail_id as email, u.gender,
-                    pr.batch_name, pr.period_start, pr.period_end,
+                    pr.batch_name, pr.period_start, pr.period_end, pr.payroll_month,
                     COALESCE(d.name, u.department) as department_name, 
                     COALESCE(des.name, u.designation) as designation_name,
                     b.name as branch_name
@@ -530,8 +548,8 @@ const payrollRunController = {
                 LEFT JOIN designations des ON u.designation = des.id
                 LEFT JOIN branches b ON u.branch = b.id
                 WHERE (u.company = ? OR ? IS NULL)
-                  AND (pr.period_start >= ? OR ? IS NULL)
-                  AND (pr.period_end <= ? OR ? IS NULL)
+                  AND (pr.period_end >= ? OR ? IS NULL)
+                  AND (pr.period_start <= ? OR ? IS NULL)
                   AND (u.branch = ? OR ? IS NULL)
                   AND (u.department = ? OR ? IS NULL)
                 ORDER BY pi.gross_salary DESC
@@ -543,25 +561,25 @@ const payrollRunController = {
                 department || null, department || null
             ]);
 
-            // 2. Fetch PF/ESI Trend for last 6 months
+            // 2. Fetch PF/ESI Trend for last 12 months
             const d = new Date();
-            d.setMonth(d.getMonth() - 6);
-            const sixMonthsAgo = formatDateStr(d);
+            d.setMonth(d.getMonth() - 12);
+            const twelveMonthsAgo = formatDateStr(d);
             const [trendRows] = await pool.execute(`
                 SELECT 
-                    DATE_FORMAT(pr.period_start, '%b %Y') as monthName,
+                    DATE_FORMAT(pr.period_end, '%b %Y') as monthName,
                     SUM(pi.epf_deduction) as pfEmployee,
                     SUM(pi.employer_epfo_deduction) as pfEmployer,
                     SUM(pi.esi_deduction) as esiEmployee,
-                    SUM(pi.esi_deduction * 4.3) as esiEmployer -- Approximate 3.25/0.75 ratio if not stored
+                    SUM(pi.esi_deduction * 4.3) as esiEmployer
                 FROM payroll_items pi
                 JOIN payroll_runs pr ON pi.payroll_run_id = pr.id
                 JOIN users u ON pi.user_id = u.id
                 WHERE (u.company = ? OR ? IS NULL)
-                  AND pr.period_start >= ?
-                GROUP BY monthName, pr.period_start
-                ORDER BY pr.period_start ASC
-            `, [company_id || null, company_id || null, sixMonthsAgo]);
+                  AND pr.period_end >= ?
+                GROUP BY monthName, pr.period_end
+                ORDER BY pr.period_end ASC
+            `, [company_id || null, company_id || null, twelveMonthsAgo]);
 
             // 3. Fetch Reimbursement Report (by status and type)
             const [reimRows] = await pool.execute(`
@@ -591,31 +609,113 @@ const payrollRunController = {
                 WHERE (u.company = ? OR ? IS NULL)
                   AND ads.status = 'Approved'
                   AND (ads.request_date >= ? OR ? IS NULL)
+                  AND (ads.request_date <= ? OR ? IS NULL)
                 GROUP BY u.id, u.employee_name, u.emp_id
-            `, [company_id || null, company_id || null, startDate || null, startDate || null]);
+            `, [company_id || null, company_id || null, startDate || null, startDate || null, endDate || null, endDate || null]);
+
+            // 5. Approved Reimbursements and Advances summary for selected date range
+            const [approvedReimSummary] = await pool.execute(`
+                SELECT 
+                    COALESCE(SUM(r.amount), 0) as totalAmount,
+                    COUNT(*) as totalCount
+                FROM reimbursements r
+                JOIN users u ON r.user_id = u.id
+                WHERE (u.company = ? OR ? IS NULL)
+                  AND r.status = 'Approved'
+                  AND (r.date >= ? OR ? IS NULL)
+                  AND (r.date <= ? OR ? IS NULL)
+            `, [company_id || null, company_id || null, startDate || null, startDate || null, endDate || null, endDate || null]);
+
+            const [approvedAdvSummary] = await pool.execute(`
+                SELECT 
+                    COALESCE(SUM(ads.amount), 0) as totalAmount,
+                    COUNT(*) as totalCount
+                FROM advance_salary ads
+                JOIN users u ON ads.user_id = u.id
+                WHERE (u.company = ? OR ? IS NULL)
+                  AND ads.status = 'Approved'
+                  AND (ads.request_date >= ? OR ? IS NULL)
+                  AND (ads.request_date <= ? OR ? IS NULL)
+            `, [company_id || null, company_id || null, startDate || null, startDate || null, endDate || null, endDate || null]);
+
+            // 6. Monthly Breakdown Trend (6 months / cycles overview)
+            const [monthlyTrendRows] = await pool.execute(`
+                SELECT 
+                    DATE_FORMAT(pr.period_end, '%b %Y') as formattedMonth,
+                    COALESCE(SUM(pi.net_salary), 0) as netSalary,
+                    COALESCE(SUM(pi.gross_salary), 0) as grossSalary,
+                    COALESCE(SUM(pi.epf_deduction + pi.esi_deduction + pi.pt_deduction + pi.lop_amount + pi.other_deductions), 0) as totalDeductions,
+                    pr.period_end
+                FROM payroll_runs pr
+                JOIN payroll_items pi ON pr.id = pi.payroll_run_id
+                JOIN users u ON pi.user_id = u.id
+                WHERE (u.company = ? OR ? IS NULL)
+                  AND pr.status = 'Completed'
+                GROUP BY formattedMonth, pr.period_end
+                ORDER BY pr.period_end ASC
+            `, [company_id || null, company_id || null]);
+
+            // Approved monthly reimbursements to merge into trend
+            const [monthlyReims] = await pool.execute(`
+                SELECT 
+                    DATE_FORMAT(r.date, '%b %Y') as formattedMonth,
+                    COALESCE(SUM(r.amount), 0) as totalReim
+                FROM reimbursements r
+                JOIN users u ON r.user_id = u.id
+                WHERE (u.company = ? OR ? IS NULL)
+                  AND r.status = 'Approved'
+                GROUP BY formattedMonth
+            `, [company_id || null, company_id || null]);
+
+            const reimMap = {};
+            monthlyReims.forEach(r => { reimMap[r.formattedMonth] = parseFloat(r.totalReim) || 0; });
+
+            const monthlyBreakdown = monthlyTrendRows.map(row => ({
+                name: row.formattedMonth,
+                'Net Salary': parseFloat(row.netSalary) || 0,
+                'Deductions': parseFloat(row.totalDeductions) || 0,
+                'Reimbursements': reimMap[row.formattedMonth] || 0
+            }));
 
             // Aggregation by user (current range)
+            let totalGross = 0;
+            let totalNet = 0;
+            let totalDeductions = 0;
             const userAggregated = {};
             const genderStats = { MALE: { gross: 0, count: 0 }, FEMALE: { gross: 0, count: 0 }, OTHER: { gross: 0, count: 0 } };
 
             baseItems.forEach(item => {
                 const uid = item.user_id;
+                const gross = parseFloat(item.gross_salary) || 0;
+                const net = parseFloat(item.net_salary) || 0;
+                const ded = (parseFloat(item.epf_deduction) || 0) + 
+                            (parseFloat(item.esi_deduction) || 0) + 
+                            (parseFloat(item.pt_deduction) || 0) + 
+                            (parseFloat(item.lop_amount) || 0) + 
+                            (parseFloat(item.other_deductions) || 0);
+
+                totalGross += gross;
+                totalNet += net;
+                totalDeductions += ded;
+
                 if (!userAggregated[uid]) {
                     userAggregated[uid] = { ...item, total_gross: 0, total_net: 0, total_deductions: 0, count: 0 };
                 }
-                userAggregated[uid].total_gross += parseFloat(item.gross_salary) || 0;
-                userAggregated[uid].total_net += parseFloat(item.net_salary) || 0;
-                userAggregated[uid].total_deductions += (parseFloat(item.epf_deduction) || 0) + (parseFloat(item.esi_deduction) || 0) + (parseFloat(item.pt_deduction) || 0) + (parseFloat(item.lop_amount) || 0) + (parseFloat(item.other_deductions) || 0);
+                userAggregated[uid].total_gross += gross;
+                userAggregated[uid].total_net += net;
+                userAggregated[uid].total_deductions += ded;
                 userAggregated[uid].count += 1;
 
                 const g = (item.gender || 'OTHER').toUpperCase();
                 if (genderStats[g]) {
-                    genderStats[g].gross += parseFloat(item.net_salary) || 0;
+                    genderStats[g].gross += net;
                     genderStats[g].count += 1;
                 }
             });
 
             const aggregatedList = Object.values(userAggregated);
+            const totalEmployees = aggregatedList.length;
+            const onHoldCount = baseItems.filter(item => item.is_hold === 1).length;
 
             // Gender Pay Gap Calculation
             const payEquity = Object.entries(genderStats).map(([gender, data]) => ({
@@ -623,7 +723,25 @@ const payrollRunController = {
                 avgNet: data.count > 0 ? (data.gross / data.count) : 0
             }));
 
+            const summary = {
+                grossSalary: totalGross,
+                netPaid: totalNet,
+                deductions: totalDeductions,
+                avgGross: totalEmployees > 0 ? Math.round(totalGross / totalEmployees) : 0,
+                avgNet: totalEmployees > 0 ? Math.round(totalNet / totalEmployees) : 0,
+                avgDeduction: totalEmployees > 0 ? Math.round(totalDeductions / totalEmployees) : 0,
+                totalEmployees,
+                onHold: onHoldCount,
+                reimbursements: parseFloat(approvedReimSummary[0]?.totalAmount) || 0,
+                reimbursementCount: parseInt(approvedReimSummary[0]?.totalCount) || 0,
+                advances: parseFloat(approvedAdvSummary[0]?.totalAmount) || 0,
+                activeAdvanceCount: parseInt(approvedAdvSummary[0]?.totalCount) || 0
+            };
+
             res.json({
+                summary,
+                latestCycle: latestCycle || null,
+                monthlyBreakdown,
                 topEarners: [...aggregatedList].sort((a, b) => b.total_gross - a.total_gross).slice(0, 5),
                 topDeductions: [...aggregatedList].sort((a, b) => b.total_deductions - a.total_deductions).slice(0, 5),
                 holds: baseItems.filter(item => item.is_hold === 1),

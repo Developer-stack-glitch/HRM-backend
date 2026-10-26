@@ -37,13 +37,13 @@ const PayrollRun = {
             params.push(status);
         }
 
-        // Add date range filtering
+        // Add date range filtering (overlapping periods)
         if (filters.startDate) {
-            whereConditions.push('period_start >= ?');
+            whereConditions.push('period_end >= ?');
             params.push(filters.startDate);
         }
         if (filters.endDate) {
-            whereConditions.push('period_end <= ?');
+            whereConditions.push('period_start <= ?');
             params.push(filters.endDate);
         }
 
