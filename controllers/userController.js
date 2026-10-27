@@ -407,6 +407,11 @@ const updateUser = async (req, res) => {
         } else if (error.code === 'ER_NO_REFERENCED_ROW_2') {
             statusCode = 400;
             message = 'Invalid selection for one of the related fields (e.g. Department, Role).';
+        } else if (error.code === 'WARN_DATA_TRUNCATED' || error.code === 'ER_DATA_TOO_LONG') {
+            statusCode = 400;
+            message = error.message.includes('role') 
+                ? 'The selected role is not supported by the database schema. Please alter users.role to VARCHAR(100).'
+                : `Invalid data length or format: ${error.message}`;
         } else if (error.message.includes('Incorrect integer value')) {
             statusCode = 400;
             message = 'Invalid numeric value provided for a field.';

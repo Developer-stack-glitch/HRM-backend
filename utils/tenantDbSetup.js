@@ -35,7 +35,7 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 name VARCHAR(255) NOT NULL,
                 email VARCHAR(255) NOT NULL UNIQUE,
                 password VARCHAR(255) NOT NULL,
-                role ENUM('admin','employee','superadmin') DEFAULT 'employee',
+                role VARCHAR(100) DEFAULT 'employee',
                 employee_name VARCHAR(255),
                 emp_id VARCHAR(50),
                 biometric_id VARCHAR(50),
