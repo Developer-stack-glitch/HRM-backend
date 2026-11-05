@@ -13,7 +13,7 @@ const Notification = {
     getUserNotifications: async (userId, role) => {
         const [rows] = await pool.execute(
             `SELECT * FROM notifications 
-             WHERE user_id = ? OR role = ? OR (role = 'admin' AND ? = 'superadmin')
+             WHERE user_id = ? OR role = ? OR (role = 'admin' AND ? IN ('superadmin', 'hr executive'))
              ORDER BY created_at DESC LIMIT 50`,
             [userId, role, role]
         );
@@ -30,7 +30,7 @@ const Notification = {
 
     markAllAsRead: async (userId, role) => {
         const [result] = await pool.execute(
-            'UPDATE notifications SET is_read = TRUE WHERE user_id = ? OR role = ? OR (role = \'admin\' AND ? = \'superadmin\')',
+            'UPDATE notifications SET is_read = TRUE WHERE user_id = ? OR role = ? OR (role = \'admin\' AND ? IN (\'superadmin\', \'hr executive\'))',
             [userId, role, role]
         );
         return result.affectedRows;

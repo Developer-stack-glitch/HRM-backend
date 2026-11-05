@@ -3,7 +3,14 @@ const bcrypt = require('bcryptjs');
 
 const updatePasswords = async () => {
     try {
-        const hashedPassword = await bcrypt.hash('acte@123', 10);
+        const newPassword = process.argv[2];
+        if (!newPassword || newPassword.length < 8) {
+            console.error('ERROR: You must supply a new password with at least 8 characters.');
+            console.error('Usage: node scripts/updatePasswords.js <NewPassword>');
+            process.exit(1);
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
         const [result] = await pool.execute(
             'UPDATE users SET password = ? WHERE role IN (?, ?)',
             [hashedPassword, 'admin', 'employee']

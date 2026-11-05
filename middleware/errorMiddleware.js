@@ -7,10 +7,18 @@ const notFound = (req, res, next) => {
 const errorHandler = (err, req, res, next) => {
     const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
     res.status(statusCode);
-    res.json({
-        message: err.message,
-        stack: process.env.NODE_ENV === 'production' ? null : err.stack,
-    });
+
+    const isProduction = process.env.NODE_ENV === 'production';
+    const message = (statusCode === 500 && isProduction)
+        ? 'Internal server error. Please try again later.'
+        : (err.message || 'An unexpected error occurred');
+
+    const response = { message };
+    if (!isProduction && process.env.SHOW_STACK === 'true') {
+        response.stack = err.stack;
+    }
+
+    res.json(response);
 };
 
 module.exports = { notFound, errorHandler };

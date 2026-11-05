@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const Organization = require('../models/organizationModel');
 const { User } = require('../models/userModel');
 const { setupTenantDatabase } = require('../utils/tenantDbSetup');
@@ -19,13 +20,14 @@ const createCompany = async (req, res) => {
         // 1. Create company in main database
         const companyId = await Organization.createCompany(data);
 
-        // 2. Automatically setup database and dedicated database user
+        // 2. Automatically setup database and dedicated database user with cryptographically secure credentials
         const dbName = `hrm_${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${companyId}`;
         const dbUser = `${name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${companyId}`.substring(0, 32);
-        const dbPass = 'admin@123';
+        const dbPass = crypto.randomBytes(16).toString('hex');
+        const initialAdminPassword = crypto.randomBytes(8).toString('base64').replace(/[^a-zA-Z0-9]/g, 'x') + '!9A';
 
         console.log(`Automatically setting up database ${dbName} for company ${name}`);
-        await setupTenantDatabase(dbName, dbUser, dbPass, { name, email: req.body.email });
+        await setupTenantDatabase(dbName, dbUser, dbPass, { name, email: req.body.email, adminPassword: initialAdminPassword });
 
         // 3. Update company record with dbName and dbUser
         await Organization.updateCompanyDbName(companyId, dbName);
@@ -35,7 +37,8 @@ const createCompany = async (req, res) => {
             message: 'Company created and database initialized successfully.',
             id: companyId,
             database: dbName,
-            dbUser: dbUser
+            dbUser: dbUser,
+            initialAdminPassword: initialAdminPassword
         });
     } catch (error) {
         console.error('Error in createCompany:', error);
@@ -59,12 +62,13 @@ const setupCompanyDatabase = async (req, res) => {
             return res.status(400).json({ message: 'Database already setup for this company' });
         }
 
-        // 1. Create separate database and user for the company
+        // 1. Create separate database and user for the company with secure credentials
         const dbName = `hrm_${company.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${company.id}`;
         const dbUser = `${company.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${company.id}`.substring(0, 32);
-        const dbPass = 'admin@123';
+        const dbPass = crypto.randomBytes(16).toString('hex');
+        const initialAdminPassword = crypto.randomBytes(8).toString('base64').replace(/[^a-zA-Z0-9]/g, 'x') + '!9A';
 
-        await setupTenantDatabase(dbName, dbUser, dbPass, { name: company.name, email: company.email });
+        await setupTenantDatabase(dbName, dbUser, dbPass, { name: company.name, email: company.email, adminPassword: initialAdminPassword });
 
         // 2. Update company record with dbName and dbUser
         await Organization.updateCompanyDbName(company.id, dbName);
@@ -73,7 +77,8 @@ const setupCompanyDatabase = async (req, res) => {
         res.status(200).json({
             message: 'Database and user initialized successfully',
             database: dbName,
-            dbUser: dbUser
+            dbUser: dbUser,
+            initialAdminPassword: initialAdminPassword
         });
     } catch (error) {
         console.error('Error in setupCompanyDatabase:', error);

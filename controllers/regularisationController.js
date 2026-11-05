@@ -1,6 +1,7 @@
 const Regularisation = require('../models/regularisationModel');
 const Attendance = require('../models/attendanceModel');
 const { pool } = require('../Config/dbConfig');
+const { isUserAdmin } = require('../middleware/authMiddleware');
 
 const calculateTotalHours = (inTime, outTime) => {
     if (!inTime || !outTime) return "00:00:00";
@@ -105,10 +106,26 @@ const updateStatus = async (req, res) => {
         const { id } = req.params;
         const { status, rejection_reason } = req.body;
         const approved_by = req.user.id;
+        const caller = req.user;
+        const isAdmin = isUserAdmin(caller);
 
         const request = await Regularisation.getById(id);
         if (!request) {
             return res.status(404).json({ message: 'Request not found' });
+        }
+
+        // Security: Prevent self-approval
+        if (String(request.user_id) === String(caller.id)) {
+            return res.status(403).json({ message: 'Forbidden: Employees cannot approve their own regularisation requests.' });
+        }
+
+        // Security: Only Admins/HR or the applicant's assigned reporting manager can approve/reject
+        if (!isAdmin) {
+            const [applicantRows] = await pool.execute('SELECT reporting_manager FROM users WHERE id = ?', [request.user_id]);
+            const reportingManager = applicantRows[0]?.reporting_manager;
+            if (String(reportingManager) !== String(caller.id)) {
+                return res.status(403).json({ message: 'Forbidden: Only administrators or the assigned reporting manager can update this request.' });
+            }
         }
 
         const success = await Regularisation.updateStatus(id, status, approved_by, rejection_reason);

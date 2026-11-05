@@ -8,6 +8,17 @@ const { sendEmail } = require('../utils/emailService');
 const Organization = require('../models/organizationModel');
 const { generatePayslipPDF } = require('../utils/pdfGenerator');
 const { sendNotification } = require('../utils/notificationHelper');
+const { isUserAdmin } = require('../middleware/authMiddleware');
+
+const escapeHtml = (str) => {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+};
 
 // Helper: get all dates between start and end (inclusive)
 function getDateRange(start, end) {
@@ -761,6 +772,10 @@ const payrollRunController = {
     // Get employees with payroll calculations for a specific payroll run
     getPayrollEmployees: async (req, res) => {
         try {
+            if (!isUserAdmin(req.user)) {
+                return res.status(403).json({ error: 'Access denied: Administrator privileges required.' });
+            }
+
             const { id } = req.params;
             const page = parseInt(req.query.page) || 1;
             const limit = parseInt(req.query.limit) || 10;
@@ -1208,6 +1223,10 @@ const payrollRunController = {
 
     generateReport: async (req, res) => {
         try {
+            if (!isUserAdmin(req.user)) {
+                return res.status(403).json({ error: 'Access denied: Administrator privileges required to generate payroll reports.' });
+            }
+
             const ExcelJS = require('exceljs');
             const { month, year, departments, academicYears, employmentTypes, reportType, format } = req.query;
 
@@ -1592,7 +1611,7 @@ const payrollRunController = {
                     } else {
                         vals = [item.emp_id, item.employee_name, `${item.designation_name} / ${item.branch_name}`, item.paid_days || 0, item.base_salary, item.hra, item.conveyance, item.special, item.variable_pay, item.gross_salary, item.lop_amount, item.deductions, item.net_salary];
                     }
-                    return `<tr>${vals.map(v => `<td>${typeof v === 'number' ? v.toFixed(2) : v}</td>`).join('')}</tr>`;
+                    return `<tr>${vals.map(v => `<td>${typeof v === 'number' ? v.toFixed(2) : escapeHtml(v)}</td>`).join('')}</tr>`;
                 }).join('')}
                                 <tr class="totals-row">
                                     <td colspan="${reportType === 'bank-advice' ? 4 : (reportType === 'tax-summary' ? 3 : (reportType === 'payslip_batch' ? 3 : 3))}" style="text-align: right; padding-right: 20px;">TOTALS</td>
@@ -1611,10 +1630,15 @@ const payrollRunController = {
 
                 const browser = await puppeteer.launch({
                     headless: 'new',
-                    args: ['--no-sandbox', '--disable-setuid-sandbox']
+                    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-web-security']
                 });
                 const page = await browser.newPage();
-                await page.setContent(htmlContent);
+                await page.setRequestInterception(true);
+                page.on('request', (interceptedReq) => {
+                    // Block all outbound requests from Puppeteer to eliminate SSRF risks
+                    interceptedReq.abort();
+                });
+                await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
                 const pdfBuffer = await page.pdf({
                     format: 'A4',
                     landscape: true,

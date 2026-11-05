@@ -1,10 +1,19 @@
 const ExcelJS = require('exceljs');
 const Leave = require('../models/leaveModel');
 const Attendance = require('../models/attendanceModel');
+const { pool } = require('../Config/dbConfig');
+const { isUserAdmin } = require('../middleware/authMiddleware');
 
 const createLeave = async (req, res) => {
     try {
         let { employee_id, start_date, end_date, is_half_day, leave_type } = req.body;
+
+        // Security: Non-admin users can only apply for leaves on their own behalf
+        if (!isUserAdmin(req.user)) {
+            employee_id = req.user.id;
+        } else if (!employee_id) {
+            employee_id = req.user.id;
+        }
 
         // Convert is_half_day to actual boolean if it's a string from FormData
         if (typeof is_half_day === 'string') {
@@ -22,7 +31,7 @@ const createLeave = async (req, res) => {
             }
         }
 
-        let data = { ...req.body, is_half_day };
+        let data = { ...req.body, employee_id, applied_by: req.user.id, is_half_day };
         if (req.files && req.files.length > 0) {
             const urls = req.files.map(file => `/uploads/${file.filename}`);
             data.document_url = JSON.stringify(urls);
@@ -83,14 +92,57 @@ const getLeaves = async (req, res) => {
 const updateLeave = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, remarks, employee_id } = req.body;
+        const { status, remarks } = req.body;
+
+        const existing = await Leave.findById(id);
+        if (!existing) {
+            return res.status(404).json({ message: 'Leave request not found' });
+        }
+
+        const isAdmin = isUserAdmin(req.user);
+        let isAuthorizedApprover = isAdmin;
+
+        if (!isAdmin) {
+            // Check if caller is the employee's assigned reporting manager
+            const [empRows] = await pool.execute('SELECT reporting_manager FROM users WHERE id = ?', [existing.employee_id]);
+            if (empRows.length > 0 && empRows[0].reporting_manager === req.user.id) {
+                isAuthorizedApprover = true;
+            }
+            if (existing.team_lead_id === req.user.id) {
+                isAuthorizedApprover = true;
+            }
+        }
+
+        // If status transition is requested (Approved/Rejected/Pending)
+        if (status && status !== existing.status) {
+            // Prevent self-approval
+            if (existing.employee_id === req.user.id && !isAdmin) {
+                return res.status(403).json({ message: 'Forbidden: Employees cannot approve or reject their own leave requests' });
+            }
+            if (!isAuthorizedApprover) {
+                return res.status(403).json({ message: 'Forbidden: You do not have permission to approve or reject this leave request' });
+            }
+            req.body.approved_by = req.user.id;
+        } else if (!isAuthorizedApprover) {
+            // Non-approvers can only edit their own pending leave request details (e.g. reason)
+            if (existing.employee_id !== req.user.id) {
+                return res.status(403).json({ message: 'Forbidden: You can only edit your own leave requests' });
+            }
+            if (existing.status !== 'Pending') {
+                return res.status(400).json({ message: 'Cannot edit leave request once it has been processed' });
+            }
+            // Strip any attempt to alter status or approved_by
+            delete req.body.status;
+            delete req.body.approved_by;
+        }
+
         const success = await Leave.update(id, req.body);
         if (!success) {
             return res.status(404).json({ message: 'Leave request not found or no changes made' });
         }
 
         // Send notification to employee
-        if (status && employee_id) {
+        if (status && existing.employee_id) {
             const io = req.app.get('socketio');
             const { sendNotification } = require('../utils/notificationHelper');
             
@@ -104,7 +156,7 @@ const updateLeave = async (req, res) => {
             }
 
             await sendNotification(io, {
-                user_id: employee_id,
+                user_id: existing.employee_id,
                 type: 'leave',
                 title: title,
                 message: message,
@@ -273,6 +325,21 @@ const generateLeaveReport = async (req, res) => {
 const deleteLeave = async (req, res) => {
     try {
         const { id } = req.params;
+        const existing = await Leave.findById(id);
+        if (!existing) {
+            return res.status(404).json({ message: 'Leave request not found' });
+        }
+
+        const isAdmin = isUserAdmin(req.user);
+        if (!isAdmin) {
+            if (existing.employee_id !== req.user.id) {
+                return res.status(403).json({ message: 'Forbidden: You can only delete your own leave requests' });
+            }
+            if (existing.status !== 'Pending') {
+                return res.status(400).json({ message: 'Cannot delete leave request once it has been processed' });
+            }
+        }
+
         const success = await Leave.delete(id);
         if (!success) {
             return res.status(404).json({ message: 'Leave request not found' });

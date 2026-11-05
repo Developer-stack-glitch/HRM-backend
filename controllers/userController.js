@@ -5,6 +5,7 @@ const { pool } = require('../Config/dbConfig');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const { sendOnboardingEmails, generateRandomPassword } = require('../utils/onboardingEmail');
+const { isUserAdmin } = require('../middleware/authMiddleware');
 
 const createUser = async (req, res) => {
     try {
@@ -250,10 +251,54 @@ const getUserById = async (req, res) => {
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
+
+        const caller = req.user;
+        const isOwner = caller && String(caller.id) === String(req.params.id);
+        const isAdmin = isUserAdmin(caller);
+
+        // Security: If caller is not an Admin/HR and not the profile owner, redact sensitive financial and PII fields
+        if (!isAdmin && !isOwner) {
+            delete user.aadhar;
+            delete user.pan;
+            delete user.bank_ac_no;
+            delete user.ifsc;
+            delete user.uan;
+            delete user.year_gross_salary;
+            delete user.variable;
+            delete user.travel_allowance;
+            delete user.employer_epfo;
+            delete user.epf;
+            delete user.pt;
+            delete user.last_increment;
+            delete user.upcoming_increment;
+            delete user.increment_type;
+            delete user.per_contact_no;
+            delete user.per_mail_id;
+            delete user.temp_address;
+            delete user.perm_address;
+            delete user.father_spouse_name;
+            delete user.father_spouse_contact;
+            delete user.mother_name;
+            delete user.mother_contact;
+            delete user.document_resume;
+            delete user.document_test_paper;
+            delete user.document_10th;
+            delete user.document_12th;
+            delete user.document_ug;
+            delete user.document_pg;
+            delete user.document_aadhar;
+            delete user.document_pan;
+            delete user.document_passbook;
+            delete user.document_relieving_letter;
+            delete user.document_exp_letter;
+            delete user.document_payslips;
+            delete user.document_emp_details_form;
+        }
+
         res.status(200).json(user);
     } catch (error) {
         console.error('Error fetching user:', error);
-        res.status(500).json({ message: 'Error fetching user', error: error.message });
+        res.status(500).json({ message: 'Error fetching user' });
     }
 };
 
@@ -273,7 +318,46 @@ const getProfile = async (req, res) => {
 const updateUser = async (req, res) => {
     try {
         const { id } = req.params;
-        const userData = { ...req.body };
+        const caller = req.user;
+        const isAdmin = isUserAdmin(caller);
+
+        // Security Check 1: Employees can only edit their own account
+        if (!isAdmin && String(caller.id) !== String(id)) {
+            return res.status(403).json({ message: "Forbidden: You are not authorized to edit another user's profile." });
+        }
+
+        // Security Check 2: Protect Superadmin accounts from being edited by non-superadmins
+        const [targetUserRows] = await pool.execute('SELECT id, role FROM users WHERE id = ?', [id]);
+        if (targetUserRows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        const targetUser = targetUserRows[0];
+        if (targetUser.role === 'superadmin' && caller.role !== 'superadmin') {
+            return res.status(403).json({ message: 'Forbidden: Only Superadmin can modify a Superadmin account.' });
+        }
+
+        const rawData = { ...req.body };
+        const userData = {};
+
+        // Security Check 3: Field Allowlist enforcement
+        // Non-admin employees are strictly prohibited from modifying roles, salary, organizational IDs, etc.
+        const EMPLOYEE_ALLOWED_FIELDS = [
+            'off_contact_no', 'per_contact_no', 'per_mail_id', 'blood_group',
+            'mother_tongue', 'temp_address', 'perm_address', 'father_spouse_name',
+            'father_spouse_contact', 'mother_name', 'mother_contact', 'password'
+        ];
+
+        Object.keys(rawData).forEach(key => {
+            if (isAdmin) {
+                // Admin cannot escalate someone to superadmin unless caller is superadmin
+                if (key === 'role' && rawData[key] === 'superadmin' && caller.role !== 'superadmin') {
+                    return;
+                }
+                userData[key] = rawData[key];
+            } else if (EMPLOYEE_ALLOWED_FIELDS.includes(key)) {
+                userData[key] = rawData[key];
+            }
+        });
 
         // Normalize booleans from FormData (strings like "true"/"false" to 1/0)
         Object.keys(userData).forEach(key => {
@@ -430,6 +514,24 @@ const updateUser = async (req, res) => {
 const deleteUser = async (req, res) => {
     try {
         const { id } = req.params;
+        const caller = req.user;
+
+        if (!isUserAdmin(caller)) {
+            return res.status(403).json({ message: 'Forbidden: Administrator privileges required.' });
+        }
+
+        if (String(caller.id) === String(id)) {
+            return res.status(400).json({ message: 'Forbidden: You cannot delete your own account.' });
+        }
+
+        const [rows] = await pool.execute('SELECT role FROM users WHERE id = ?', [id]);
+        if (rows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        if (rows[0].role === 'superadmin') {
+            return res.status(400).json({ message: 'Forbidden: Superadmin account cannot be deleted.' });
+        }
+
         const affectedRows = await User.delete(id);
         if (affectedRows === 0) {
             return res.status(404).json({ message: 'User not found' });
@@ -437,7 +539,7 @@ const deleteUser = async (req, res) => {
         res.status(200).json({ message: 'User deleted successfully' });
     } catch (error) {
         console.error('Error deleting user:', error);
-        res.status(500).json({ message: 'Error deleting user', error: error.message });
+        res.status(500).json({ message: 'Error deleting user' });
     }
 };
 
@@ -787,7 +889,7 @@ const bulkUploadUsers = async (req, res) => {
 
                 // Auto-set company
                 userData.company = req.user.company;
-                userData.password = 'acte@123';
+                userData.password = generateRandomPassword(12);
                 if (salary_structure_id) {
                     userData.salary_structure_id = salary_structure_id;
                 }

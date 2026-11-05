@@ -66,7 +66,10 @@ const updateClaimStatus = async (req, res) => {
         const { id } = req.params;
         const { status, comment } = req.body;
 
-        if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+        const role = (req.user.role || '').toLowerCase();
+        const isAdmin = role === 'admin' || role === 'superadmin' || role === 'hr executive';
+
+        if (!isAdmin) {
             return res.status(403).json({ message: 'Unauthorized to update status' });
         }
 
@@ -106,12 +109,15 @@ const deleteClaim = async (req, res) => {
             return res.status(404).json({ message: 'Claim not found' });
         }
 
+        const role = (req.user.role || '').toLowerCase();
+        const isAdmin = role === 'admin' || role === 'superadmin' || role === 'hr executive';
+
         // Only owner or admin can delete
-        if (req.user.role !== 'admin' && req.user.role !== 'superadmin' && claim.user_id !== req.user.id) {
+        if (!isAdmin && claim.user_id !== req.user.id) {
             return res.status(403).json({ message: 'Unauthorized to delete this claim' });
         }
 
-        if (claim.status !== 'Pending' && req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+        if (claim.status !== 'Pending' && !isAdmin) {
             return res.status(400).json({ message: 'Cannot delete processed claims' });
         }
 

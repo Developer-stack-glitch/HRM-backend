@@ -1,22 +1,18 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { pool, getTenantPool, config } = require('../Config/dbConfig');
 
 const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
     // 1. Create the database
     await pool.execute(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
 
-    // 2. Create the database user if provided
+    // 2. Create the database user if provided - restricted to localhost only
     if (dbUser && dbPass) {
         try {
-            // Create user for both localhost and '%' to allow remote connections if needed
             await pool.execute(`CREATE USER IF NOT EXISTS ?@'localhost' IDENTIFIED BY ?`, [dbUser, dbPass]);
             await pool.execute(`GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO ?@'localhost'`, [dbUser]);
-
-            await pool.execute(`CREATE USER IF NOT EXISTS ?@'%' IDENTIFIED BY ?`, [dbUser, dbPass]);
-            await pool.execute(`GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO ?@'%'`, [dbUser]);
-
             await pool.execute(`FLUSH PRIVILEGES`);
-            console.log(`Created database user: ${dbUser} with access to ${dbName}`);
+            console.log(`Created database user: ${dbUser} with access to ${dbName} (localhost only)`);
         } catch (userError) {
             console.error(`Error creating database user ${dbUser}:`, userError.message);
         }
@@ -953,7 +949,8 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
 
         // 10. Initial Setup Data
         if (companyData) {
-            const hashedPassword = await bcrypt.hash('admin@123', 10);
+            const adminPass = companyData.adminPassword || (crypto.randomBytes(8).toString('base64').replace(/[^a-zA-Z0-9]/g, 'x') + '!9A');
+            const hashedPassword = await bcrypt.hash(adminPass, 12);
             const adminEmail = companyData.email || `admin@${companyData.name.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`;
 
             const [result] = await tenantPool.execute(

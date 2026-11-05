@@ -5,6 +5,7 @@ const CompanyWeekOff = require('../models/companyWeekoffModel');
 const Device = require('../models/deviceModel');
 const { User } = require('../models/userModel');
 const { pool } = require('../Config/dbConfig');
+const { isUserAdmin } = require('../middleware/authMiddleware');
 const axios = require('axios');
 const puppeteer = require('puppeteer');
 const xml2js = require('xml2js');
@@ -947,6 +948,15 @@ exports.getTodayStatus = async (req, res) => {
         const { userId } = req.params;
         const date = getISTDate();
 
+        // Security check: non-admins can only view their own status or their direct reports
+        const isAdmin = isUserAdmin(req.user);
+        if (!isAdmin && String(req.user.id) !== String(userId)) {
+            const [subCheck] = await pool.execute('SELECT id FROM users WHERE id = ? AND reporting_manager = ?', [userId, req.user.id]);
+            if (subCheck.length === 0) {
+                return res.status(403).json({ message: 'Forbidden: You can only view your own or direct report status' });
+            }
+        }
+
         // Fetch user shift info
         const [users] = await pool.execute('SELECT shift FROM users WHERE id = ?', [userId || null]);
         const [roster] = await pool.execute(
@@ -1086,7 +1096,9 @@ exports.getTodayStatus = async (req, res) => {
 
 exports.webClockIn = async (req, res) => {
     try {
-        const { user_id, latitude, longitude, location } = req.body;
+        const isAdmin = isUserAdmin(req.user);
+        const user_id = (!isAdmin || !req.body.user_id) ? req.user.id : req.body.user_id;
+        const { latitude, longitude, location } = req.body;
         const date = getISTDate();
         const web_punch_in = getISTTime();
 
@@ -1193,7 +1205,9 @@ exports.webClockIn = async (req, res) => {
 
 exports.webClockOut = async (req, res) => {
     try {
-        const { user_id, latitude, longitude, location } = req.body;
+        const isAdmin = isUserAdmin(req.user);
+        const user_id = (!isAdmin || !req.body.user_id) ? req.user.id : req.body.user_id;
+        const { latitude, longitude, location } = req.body;
         const date = getISTDate();
         const web_punch_out = getISTTime();
 
@@ -1264,7 +1278,9 @@ exports.webClockOut = async (req, res) => {
 
 exports.startBreak = async (req, res) => {
     try {
-        const { user_id, latitude, longitude, location } = req.body;
+        const isAdmin = isUserAdmin(req.user);
+        const user_id = (!isAdmin || !req.body.user_id) ? req.user.id : req.body.user_id;
+        const { latitude, longitude, location } = req.body;
         const date = getISTDate();
         const break_start = getISTDateTime();
 
@@ -1302,7 +1318,8 @@ exports.startBreak = async (req, res) => {
 
 exports.endBreak = async (req, res) => {
     try {
-        const { user_id } = req.body;
+        const isAdmin = isUserAdmin(req.user);
+        const user_id = (!isAdmin || !req.body.user_id) ? req.user.id : req.body.user_id;
         const date = getISTDate();
         const break_end_str = getISTDateTime();
 
@@ -1547,18 +1564,28 @@ const processBiometricLogs = async (logs) => {
 };
 
 exports.getAttendance = async (req, res) => {
-    console.log('[AttendanceAPI] GET /attendance called');
     try {
         const { startDate, endDate, userIds, page, limit, search, status, isEdited } = req.query;
-        const userRole = req.user.role;
         const userId = req.user.id;
+        const isAdmin = isUserAdmin(req.user);
 
         let targetUserIds = null;
-        if (userIds) {
+        if (!isAdmin) {
+            // Non-admin can only see their own attendance or that of their direct reports
+            const [reportees] = await pool.execute('SELECT id FROM users WHERE reporting_manager = ?', [userId]);
+            const teamIds = [String(userId), ...reportees.map(r => String(r.id))];
+            if (userIds) {
+                const requested = userIds.split(',').map(id => id.trim()).filter(Boolean);
+                targetUserIds = requested.filter(id => teamIds.includes(id));
+            } else {
+                targetUserIds = teamIds;
+            }
+        } else if (userIds) {
             targetUserIds = userIds.split(',').map(id => id.trim()).filter(Boolean);
         }
 
-        const attendanceData = await getAttendanceDataInternal(startDate, endDate, userId, userRole, targetUserIds);
+        const effectiveRole = isAdmin ? 'admin' : 'employee';
+        const attendanceData = await getAttendanceDataInternal(startDate, endDate, userId, effectiveRole, targetUserIds);
 
         // If pagination parameters (page or limit) are requested
         if (page !== undefined || limit !== undefined) {

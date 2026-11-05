@@ -14,7 +14,8 @@ const getPolicies = asyncHandler(async (req, res) => {
 // @route   POST /api/policies
 // @access  Private/Admin
 const createPolicy = asyncHandler(async (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+    const role = (req.user.role || '').toLowerCase();
+    if (role !== 'admin' && role !== 'superadmin' && role !== 'hr executive') {
         return res.status(403).json({ message: 'Unauthorized access' });
     }
 
@@ -58,7 +59,8 @@ const createPolicy = asyncHandler(async (req, res) => {
 // @route   PUT /api/policies/:id
 // @access  Private/Admin
 const updatePolicy = asyncHandler(async (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+    const role = (req.user.role || '').toLowerCase();
+    if (role !== 'admin' && role !== 'superadmin' && role !== 'hr executive') {
         return res.status(403).json({ message: 'Unauthorized access' });
     }
 
@@ -97,7 +99,8 @@ const updatePolicy = asyncHandler(async (req, res) => {
 // @route   DELETE /api/policies/:id
 // @access  Private/Admin
 const deletePolicy = asyncHandler(async (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+    const role = (req.user.role || '').toLowerCase();
+    if (role !== 'admin' && role !== 'superadmin' && role !== 'hr executive') {
         return res.status(403).json({ message: 'Unauthorized access' });
     }
 
