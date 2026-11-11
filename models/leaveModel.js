@@ -120,12 +120,14 @@ class Leave {
             conditions.push('(u.employee_name LIKE ? OR l.leave_type LIKE ? OR u.emp_id LIKE ?)');
             params.push(searchPattern, searchPattern, searchPattern);
         }
-        if (startDate) {
-            conditions.push('(l.start_date >= ? OR DATE(l.created_at) >= ?)');
+        if (startDate && endDate) {
+            conditions.push('((l.start_date <= ? AND l.end_date >= ?) OR (DATE(l.created_at) BETWEEN ? AND ?))');
+            params.push(endDate, startDate, startDate, endDate);
+        } else if (startDate) {
+            conditions.push('(l.end_date >= ? OR DATE(l.created_at) >= ?)');
             params.push(startDate, startDate);
-        }
-        if (endDate) {
-            conditions.push('(l.end_date <= ? OR DATE(l.created_at) <= ?)');
+        } else if (endDate) {
+            conditions.push('(l.start_date <= ? OR DATE(l.created_at) <= ?)');
             params.push(endDate, endDate);
         }
 

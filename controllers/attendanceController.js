@@ -463,8 +463,8 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     let leaveQuery = "SELECT * FROM leaves WHERE status = 'Approved'";
     const leaveParams = [];
     if (startDate && endDate) {
-        leaveQuery += " AND ((start_date BETWEEN ? AND ?) OR (end_date BETWEEN ? AND ?))";
-        leaveParams.push(startDate, endDate, startDate, endDate);
+        leaveQuery += " AND (start_date <= ? AND end_date >= ?)";
+        leaveParams.push(endDate, startDate);
     }
     if (userId && userRole === 'employee') {
         leaveQuery += " AND employee_id = ?";
@@ -720,40 +720,7 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     const userMapGlobal = {};
     allUsers.forEach(u => { userMapGlobal[String(u.id)] = u; });
 
-    // Note: Redundant leaveOnlyEntries logic removed as enrichAttendanceRecord now handles allLeaves via gap filler.
-    // This ensures no duplicate records for leave days and consistent status calculation.
-
-    // Rule: Mark only the VERY FIRST absent day in the selected range as 'CL' (On Leave)
-    // Grouping by user to ensure we find the true first absent day for each individual
-    const userRecordsMap = {};
-    finalAttendance.forEach(record => {
-        const uid = String(record.user_id);
-        if (!userRecordsMap[uid]) userRecordsMap[uid] = [];
-        userRecordsMap[uid].push(record);
-    });
-
-    let conversionCount = 0;
-    const debugUser = Object.keys(userRecordsMap)[0]; // Log first user for debug
-
-    Object.keys(userRecordsMap).forEach(uid => {
-        const userRecords = userRecordsMap[uid];
-        userRecords.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-
-        if (uid === debugUser) {
-            console.log(`[AttendanceRule] Debugging user ${uid}. Records:`, userRecords.map(r => `${r.date}:${r.status}`).join(', '));
-        }
-
-        const firstAbsent = userRecords.find(r => r.status === 'Absent' && !r.is_edited);
-        if (firstAbsent) {
-            firstAbsent.status = 'On Leave';
-            firstAbsent.leave_type = 'CL';
-            conversionCount++;
-            if (uid === debugUser) console.log(`[AttendanceRule] Converted ${firstAbsent.date} to On Leave`);
-        }
-    });
-
-    console.log(`[AttendanceRule] Processed ${finalAttendance.length} records across ${Object.keys(userRecordsMap).length} users. Converted ${conversionCount} first-absences to 'On Leave'.`);
-
+    // Note: enrichAttendanceRecord handles approved leaves via gap filler.
     return finalAttendance;
 };
 
