@@ -1,4 +1,5 @@
 const Reimbursement = require('../models/reimbursementModel');
+const { isUserAdmin } = require('../middleware/authMiddleware');
 
 const createReimbursement = async (req, res) => {
     try {
@@ -40,7 +41,7 @@ const createReimbursement = async (req, res) => {
 const getReimbursements = async (req, res) => {
     try {
         const filters = {};
-        if (req.user.role === 'employee') {
+        if (!isUserAdmin(req.user)) {
             filters.user_id = req.user.id;
         }
 

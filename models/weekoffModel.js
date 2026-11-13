@@ -38,6 +38,13 @@ class WeekOff {
         return rows;
     }
 
+    static async getByUserIds(userIds) {
+        if (!userIds || userIds.length === 0) return [];
+        const placeholders = userIds.map(() => '?').join(',');
+        const [rows] = await pool.query(`SELECT * FROM weekoff WHERE userid IN (${placeholders})`, userIds);
+        return rows;
+    }
+
     static async getById(id) {
         const [rows] = await pool.execute('SELECT * FROM weekoff WHERE id = ?', [id]);
         return rows[0];

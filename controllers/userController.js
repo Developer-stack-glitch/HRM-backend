@@ -26,6 +26,15 @@ const createUser = async (req, res) => {
             }
         });
 
+        // Normalize reporting_manager (support multiple IDs as comma-separated string)
+        if (userData.reporting_manager) {
+            if (Array.isArray(userData.reporting_manager)) {
+                userData.reporting_manager = userData.reporting_manager.map(String).filter(Boolean).join(',') || null;
+            } else if (typeof userData.reporting_manager === 'string') {
+                userData.reporting_manager = userData.reporting_manager.split(',').map(s => s.trim()).filter(Boolean).join(',') || null;
+            }
+        }
+
         // Automatically set company from logged in user (not chooseable)
         if (req.user && req.user.company) {
             userData.company = req.user.company;
@@ -198,8 +207,8 @@ const getUsers = async (req, res) => {
             }
         });
 
-        // Security: If employee, they can only "get" themselves
-        if (userRole === 'employee') {
+        // Security: If not an administrator or HR, they can only "get" themselves
+        if (!isUserAdmin(req.user)) {
             const result = await User.findById(userId);
             return res.status(200).json({
                 users: result ? [result] : [],
@@ -373,6 +382,15 @@ const updateUser = async (req, res) => {
                 userData[key] = null;
             }
         });
+
+        // Normalize reporting_manager (support multiple IDs as comma-separated string)
+        if (userData.reporting_manager) {
+            if (Array.isArray(userData.reporting_manager)) {
+                userData.reporting_manager = userData.reporting_manager.map(String).filter(Boolean).join(',') || null;
+            } else if (typeof userData.reporting_manager === 'string') {
+                userData.reporting_manager = userData.reporting_manager.split(',').map(s => s.trim()).filter(Boolean).join(',') || null;
+            }
+        }
 
         // Handle existing files and new uploads
         // First, check for any existing files sent back
@@ -892,6 +910,9 @@ const bulkUploadUsers = async (req, res) => {
                 userData.password = generateRandomPassword(12);
                 if (salary_structure_id) {
                     userData.salary_structure_id = salary_structure_id;
+                }
+                if (userData.reporting_manager) {
+                    userData.reporting_manager = String(userData.reporting_manager).split(',').map(s => s.trim()).filter(Boolean).join(',') || null;
                 }
                 if (!userData.employee_name || !userData.off_mail_id || !userData.department || !userData.designation || !userData.branch || !userData.shift || !userData.reporting_manager) {
                     throw new Error(`Missing mandatory fields for row: ${JSON.stringify(rowData)}`);

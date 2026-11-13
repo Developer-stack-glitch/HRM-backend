@@ -177,10 +177,13 @@ const getHolidayDetail = (date, holidays, companyId) => {
 };
 
 
-const isWeekOff = async (userId, companyId, date) => {
+const isWeekOff = async (userId, companyId, date, cachedRules = null) => {
 
     // 1. Check for User-specific Week Off
-    const userRules = await WeekOff.getByUserId(userId);
+    let userRules = cachedRules?.userRulesMap ? (cachedRules.userRulesMap[userId] || []) : null;
+    if (userRules === null && userId) {
+        userRules = await WeekOff.getByUserId(userId);
+    }
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const d = new Date(date);
     if (isNaN(d.getTime())) return false;
@@ -200,16 +203,19 @@ const isWeekOff = async (userId, companyId, date) => {
 
     // 2. Check for Company-wide Week Off
     if (companyId) {
-        const companyRules = await CompanyWeekOff.getByCompanyId(companyId);
+        let companyRules = cachedRules?.companyRulesMap ? (cachedRules.companyRulesMap[companyId] || []) : null;
+        if (companyRules === null) {
+            companyRules = await CompanyWeekOff.getByCompanyId(companyId);
+        }
         if (companyRules && companyRules.length > 0) {
             return companyRules.some(r => r.day_name.toLowerCase() === dayNameLower);
         } else {
-            return new Date(date).getDay() === 0;
+            return d.getDay() === 0;
         }
     }
 
     // 3. Global fallback to Sunday
-    return new Date(date).getDay() === 0;
+    return d.getDay() === 0;
 };
 
 const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = []) => {
@@ -724,20 +730,47 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     return finalAttendance;
 };
 
-const fetchBiometricLogsInternal = async (fromDate, toDate) => {
-    try {
-        const devices = await Device.getAll();
-        if (devices.length === 0) {
-            console.log('No devices found in database.');
-            return [];
+// In-memory cache for biometric logs to avoid redundant WAN SOAP requests
+const biometricCache = new Map();
+const BIOMETRIC_CACHE_TTL = 3 * 60 * 1000; // 3 minutes
+
+const clearBiometricCache = () => {
+    biometricCache.clear();
+};
+
+const fetchBiometricLogsInternal = async (fromDate, toDate, forceRefresh = false) => {
+    const fDateStr = fromDate || getISTDate();
+    const tDateStr = toDate || getISTDate();
+    const cacheKey = `${fDateStr}_${tDateStr}`;
+
+    if (!forceRefresh && biometricCache.has(cacheKey)) {
+        const cached = biometricCache.get(cacheKey);
+        if (cached.data && (Date.now() - cached.timestamp < BIOMETRIC_CACHE_TTL)) {
+            return cached.data;
         }
+        if (cached.inFlightPromise) {
+            return await cached.inFlightPromise;
+        }
+    }
 
-        const fDate = fromDate ? `${fromDate} 00:00` : `${getISTDate()} 00:00`;
-        const tDate = toDate ? `${toDate} 23:59` : `${getISTDate()} 23:59`;
+    const fetchPromise = (async () => {
+        try {
+            const devices = await Device.getAll();
+            if (devices.length === 0) {
+                console.log('No devices found in database.');
+                return [];
+            }
 
-        const logPromises = devices.map(async (device) => {
-            try {
-                const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
+            const fDate = `${fDateStr} 00:00`;
+            const tDate = `${tDateStr} 23:59`;
+
+            const biometricApiUrl = process.env.BIOMETRIC_API_URL || 'http://210.18.138.85:80/iclock/webapiservice.asmx?op=GetTransactionsLog';
+            const biometricUser = process.env.BIOMETRIC_API_USER || 'API';
+            const biometricPassword = process.env.BIOMETRIC_API_PASSWORD || 'Essl@123';
+
+            const logPromises = devices.map(async (device) => {
+                try {
+                    const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
                xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
@@ -746,54 +779,74 @@ const fetchBiometricLogsInternal = async (fromDate, toDate) => {
             <FromDate>${fDate}</FromDate>
             <ToDate>${tDate}</ToDate>
             <SerialNumber>${device.serial_number}</SerialNumber>
-            <UserName>API</UserName>
-            <UserPassword>Essl@123</UserPassword>
+            <UserName>${biometricUser}</UserName>
+            <UserPassword>${biometricPassword}</UserPassword>
             <strDataList>123</strDataList>
         </GetTransactionsLog>
     </soap:Body>
 </soap:Envelope>`;
 
-                const response = await axios.post('http://210.18.138.85:80/iclock/webapiservice.asmx?op=GetTransactionsLog', soapEnvelope, {
-                    headers: {
-                        'Content-Type': 'text/xml; charset=utf-8',
-                        'SOAPAction': 'http://tempuri.org/GetTransactionsLog'
-                    },
-                    timeout: 8000
-                });
+                    const response = await axios.post(biometricApiUrl, soapEnvelope, {
+                        headers: {
+                            'Content-Type': 'text/xml; charset=utf-8',
+                            'SOAPAction': 'http://tempuri.org/GetTransactionsLog'
+                        },
+                        timeout: 8000
+                    });
 
-                const parser = new xml2js.Parser({ explicitArray: false, ignoreAttrs: true });
-                const result = await parser.parseStringPromise(response.data);
+                    const parser = new xml2js.Parser({ explicitArray: false, ignoreAttrs: true });
+                    const result = await parser.parseStringPromise(response.data);
 
-                const body = result['soap:Envelope']?.['soap:Body'] || result['s:Envelope']?.['s:Body'] || result['Envelope']?.['Body'];
-                const apiResponse = body?.['GetTransactionsLogResponse'] || body?.['ns0:GetTransactionsLogResponse'];
-                let rawData = apiResponse?.['strDataList'];
+                    const body = result['soap:Envelope']?.['soap:Body'] || result['s:Envelope']?.['s:Body'] || result['Envelope']?.['Body'];
+                    const apiResponse = body?.['GetTransactionsLogResponse'] || body?.['ns0:GetTransactionsLogResponse'];
+                    let rawData = apiResponse?.['strDataList'];
 
-                if (!rawData || typeof rawData !== 'string') return [];
+                    if (!rawData || typeof rawData !== 'string') return [];
 
-                const lines = rawData.trim().split('\n');
-                return lines.map(line => {
-                    const parts = line.split('\t').map(p => p.trim()).filter(Boolean);
-                    if (parts.length < 2) return null;
-                    const empId = parts[0];
-                    const timestamp = parts[1];
-                    if (!timestamp) return null;
-                    const [dateRaw, time] = timestamp.split(' ');
-                    if (!dateRaw) return null;
-                    const date = normalizeDate(dateRaw);
-                    return { emp_id: empId, date, time, timestamp, device_name: device.name };
-                }).filter(Boolean);
-            } catch (err) {
-                console.error(`Error fetching logs for device ${device.name} (${device.serial_number}):`, err.message);
-                return [];
+                    const lines = rawData.trim().split('\n');
+                    return lines.map(line => {
+                        const parts = line.split('\t').map(p => p.trim()).filter(Boolean);
+                        if (parts.length < 2) return null;
+                        const empId = parts[0];
+                        const timestamp = parts[1];
+                        if (!timestamp) return null;
+                        const [dateRaw, time] = timestamp.split(' ');
+                        if (!dateRaw) return null;
+                        const date = normalizeDate(dateRaw);
+                        return { emp_id: empId, date, time, timestamp, device_name: device.name };
+                    }).filter(Boolean);
+                } catch (err) {
+                    console.error(`Error fetching logs for device ${device.name} (${device.serial_number}):`, err.message);
+                    return [];
+                }
+            });
+
+            const results = await Promise.all(logPromises);
+            const flat = results.flat();
+            biometricCache.set(cacheKey, {
+                timestamp: Date.now(),
+                data: flat,
+                inFlightPromise: null
+            });
+            return flat;
+        } catch (error) {
+            console.error('Error fetching biometric logs:', error.message);
+            const stale = biometricCache.get(cacheKey);
+            if (stale && stale.data) {
+                console.warn(`[Biometric] Serving ${stale.data.length} cached logs as fallback`);
+                return stale.data;
             }
-        });
+            return [];
+        }
+    })();
 
-        const results = await Promise.all(logPromises);
-        return results.flat();
-    } catch (error) {
-        console.error('Error fetching biometric logs:', error.message);
-        return [];
-    }
+    biometricCache.set(cacheKey, {
+        timestamp: biometricCache.get(cacheKey)?.timestamp || 0,
+        data: biometricCache.get(cacheKey)?.data || null,
+        inFlightPromise: fetchPromise
+    });
+
+    return await fetchPromise;
 };
 
 const formatDate = (date) => {
@@ -918,7 +971,7 @@ exports.getTodayStatus = async (req, res) => {
         // Security check: non-admins can only view their own status or their direct reports
         const isAdmin = isUserAdmin(req.user);
         if (!isAdmin && String(req.user.id) !== String(userId)) {
-            const [subCheck] = await pool.execute('SELECT id FROM users WHERE id = ? AND reporting_manager = ?', [userId, req.user.id]);
+            const [subCheck] = await pool.execute('SELECT id FROM users WHERE id = ? AND (reporting_manager = ? OR FIND_IN_SET(?, reporting_manager) > 0)', [userId, req.user.id, req.user.id]);
             if (subCheck.length === 0) {
                 return res.status(403).json({ message: 'Forbidden: You can only view your own or direct report status' });
             }
@@ -1539,7 +1592,7 @@ exports.getAttendance = async (req, res) => {
         let targetUserIds = null;
         if (!isAdmin) {
             // Non-admin can only see their own attendance or that of their direct reports
-            const [reportees] = await pool.execute('SELECT id FROM users WHERE reporting_manager = ?', [userId]);
+            const [reportees] = await pool.execute('SELECT id FROM users WHERE reporting_manager = ? OR FIND_IN_SET(?, reporting_manager) > 0', [userId, userId]);
             const teamIds = [String(userId), ...reportees.map(r => String(r.id))];
             if (userIds) {
                 const requested = userIds.split(',').map(id => id.trim()).filter(Boolean);
@@ -1716,7 +1769,8 @@ exports.deleteAttendance = async (req, res) => {
 exports.syncBiometricLogs = async (req, res) => {
     try {
         const { fromDate, toDate } = req.body;
-        const logs = await fetchBiometricLogsInternal(fromDate, toDate);
+        clearBiometricCache();
+        const logs = await fetchBiometricLogsInternal(fromDate, toDate, true);
 
         if (logs.length === 0) {
             return res.json({ message: 'No logs found to sync', count: 0 });

@@ -19,6 +19,20 @@ const calculateTotalHours = (inTime, outTime) => {
     }
 };
 
+const formatDateSafe = (d) => {
+    if (!d) return '';
+    if (typeof d === 'string') {
+        return d.split('T')[0];
+    }
+    if (d instanceof Date) {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+    return String(d);
+};
+
 const createRequest = async (req, res) => {
     try {
         const { date, check_in, check_out, reason } = req.body;
@@ -57,15 +71,18 @@ const createRequest = async (req, res) => {
             ? 'Punch In Only' 
             : 'Punch Out Only';
 
-        // 1. Send to Reporting Manager if exists
+        // 1. Send to Reporting Manager(s) if exists
         if (userData && userData.reporting_manager) {
-            await sendNotification(io, {
-                user_id: userData.reporting_manager,
-                type: 'request',
-                title: 'New Regularisation Request',
-                message: `${userName} has requested attendance regularisation (${punchTypeDesc}) for ${date}`,
-                extra_data: { requestId, type: 'regularisation_request' }
-            });
+            const managerIds = String(userData.reporting_manager).split(',').map(id => id.trim()).filter(Boolean);
+            for (const mgrId of managerIds) {
+                await sendNotification(io, {
+                    user_id: mgrId,
+                    type: 'request',
+                    title: 'New Regularisation Request',
+                    message: `${userName} has requested attendance regularisation (${punchTypeDesc}) for ${date}`,
+                    extra_data: { requestId, type: 'regularisation_request' }
+                });
+            }
         }
 
         // 2. Send to Admin/Superadmin
@@ -119,11 +136,12 @@ const updateStatus = async (req, res) => {
             return res.status(403).json({ message: 'Forbidden: Employees cannot approve their own regularisation requests.' });
         }
 
-        // Security: Only Admins/HR or the applicant's assigned reporting manager can approve/reject
+        // Security: Only Admins/HR or any assigned reporting manager can approve/reject
         if (!isAdmin) {
             const [applicantRows] = await pool.execute('SELECT reporting_manager FROM users WHERE id = ?', [request.user_id]);
             const reportingManager = applicantRows[0]?.reporting_manager;
-            if (String(reportingManager) !== String(caller.id)) {
+            const mgrIds = String(reportingManager || '').split(',').map(s => s.trim()).filter(Boolean);
+            if (!mgrIds.includes(String(caller.id))) {
                 return res.status(403).json({ message: 'Forbidden: Only administrators or the assigned reporting manager can update this request.' });
             }
         }
@@ -132,7 +150,7 @@ const updateStatus = async (req, res) => {
 
         if (success && status === 'Approved') {
             // Update or Create Attendance record
-            const formattedDate = new Date(request.date).toISOString().split('T')[0];
+            const formattedDate = formatDateSafe(request.date);
             const [existingAttendance] = await pool.execute(
                 'SELECT * FROM attendance WHERE user_id = ? AND date = ?',
                 [request.user_id, formattedDate]
@@ -242,10 +260,10 @@ const getCounts = async (req, res) => {
                 SELECT r.status, COUNT(*) as count 
                 FROM regularisations r
                 JOIN users u ON r.user_id = u.id
-                WHERE (r.user_id = ? OR u.reporting_manager = ?) ${dateCondition}
+                WHERE (r.user_id = ? OR u.reporting_manager = ? OR FIND_IN_SET(?, u.reporting_manager) > 0) ${dateCondition}
                 GROUP BY r.status
             `;
-            params.push(userId, userId, ...dateParams);
+            params.push(userId, userId, userId, ...dateParams);
         }
 
         const [rows] = await pool.execute(query, params);

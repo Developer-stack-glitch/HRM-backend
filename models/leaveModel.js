@@ -100,8 +100,8 @@ class Leave {
         const managerConditions = [];
         const managerParams = [];
         if (reporting_manager && personal_user_id) {
-            managerConditions.push('u.reporting_manager = ? OR l.employee_id = ?');
-            managerParams.push(reporting_manager, personal_user_id);
+            managerConditions.push('(u.reporting_manager = ? OR FIND_IN_SET(?, u.reporting_manager) > 0 OR l.employee_id = ?)');
+            managerParams.push(reporting_manager, reporting_manager, personal_user_id);
         }
         if (team_lead_id) {
             managerConditions.push('l.team_lead_id = ?');
@@ -182,8 +182,8 @@ class Leave {
         const managerCountConditions = [];
         const managerCountParams = [];
         if (reporting_manager && personal_user_id) {
-            managerCountConditions.push('u.reporting_manager = ? OR l.employee_id = ?');
-            managerCountParams.push(reporting_manager, personal_user_id);
+            managerCountConditions.push('(u.reporting_manager = ? OR FIND_IN_SET(?, u.reporting_manager) > 0 OR l.employee_id = ?)');
+            managerCountParams.push(reporting_manager, reporting_manager, personal_user_id);
         }
         if (team_lead_id) {
             managerCountConditions.push('l.team_lead_id = ?');
@@ -274,6 +274,107 @@ class Leave {
     static async delete(id) {
         const [result] = await pool.execute('DELETE FROM leaves WHERE id = ?', [id]);
         return result.affectedRows > 0;
+    }
+
+    static async getLeaveBalance(employeeId, year = null) {
+        const currentYear = year || new Date().getFullYear();
+        const currentMonth = new Date().getMonth() + 1;
+
+        // Fetch company policy for limits
+        const [empRows] = await pool.execute('SELECT company FROM users WHERE id = ?', [employeeId]);
+        const companyId = empRows[0]?.company;
+
+        let monthlyClLimit = 1.0;
+        let permissionLimit = 2;
+        if (companyId) {
+            const [policyRows] = await pool.execute('SELECT cl_limit, permission_limit FROM company_policies WHERE company_id = ?', [companyId]);
+            if (policyRows.length > 0) {
+                monthlyClLimit = parseFloat(policyRows[0].cl_limit) || 1.0;
+                permissionLimit = parseFloat(policyRows[0].permission_limit) || 2;
+            }
+        }
+
+        const annualClLimit = monthlyClLimit * 12;
+
+        // Calculate taken leaves in current year
+        const [yearLeaves] = await pool.execute(`
+            SELECT leave_type, status,
+                   SUM(CASE 
+                       WHEN is_half_day = 1 THEN 0.5 
+                       WHEN leave_type = 'Permission' THEN 0 
+                       ELSE (DATEDIFF(end_date, start_date) + 1) 
+                   END) as total_days,
+                   COUNT(*) as count
+            FROM leaves
+            WHERE employee_id = ? AND YEAR(start_date) = ? AND status != 'Rejected'
+            GROUP BY leave_type, status
+        `, [employeeId, currentYear]);
+
+        // Calculate taken leaves in current month
+        const [monthLeaves] = await pool.execute(`
+            SELECT leave_type, status,
+                   SUM(CASE 
+                       WHEN is_half_day = 1 THEN 0.5 
+                       WHEN leave_type = 'Permission' THEN 0 
+                       ELSE (DATEDIFF(end_date, start_date) + 1) 
+                   END) as total_days,
+                   COUNT(*) as count
+            FROM leaves
+            WHERE employee_id = ? AND YEAR(start_date) = ? AND MONTH(start_date) = ? AND status != 'Rejected'
+            GROUP BY leave_type, status
+        `, [employeeId, currentYear, currentMonth]);
+
+        const summary = {
+            employee_id: employeeId,
+            year: currentYear,
+            month: currentMonth,
+            limits: {
+                monthly_casual_leave: monthlyClLimit,
+                annual_casual_leave: annualClLimit,
+                permission_limit: permissionLimit
+            },
+            year_to_date: {
+                casual_leave_taken: 0,
+                sick_leave_taken: 0,
+                earned_leave_taken: 0,
+                lop_taken: 0,
+                permissions_count: 0
+            },
+            current_month: {
+                casual_leave_taken: 0,
+                sick_leave_taken: 0,
+                earned_leave_taken: 0,
+                lop_taken: 0,
+                permissions_count: 0
+            },
+            remaining: {
+                annual_casual_leave: annualClLimit,
+                monthly_casual_leave: monthlyClLimit
+            }
+        };
+
+        yearLeaves.forEach(row => {
+            const days = parseFloat(row.total_days) || 0;
+            if (row.leave_type === 'Casual Leave') summary.year_to_date.casual_leave_taken += days;
+            else if (row.leave_type === 'Sick Leave') summary.year_to_date.sick_leave_taken += days;
+            else if (row.leave_type === 'Earned Leave') summary.year_to_date.earned_leave_taken += days;
+            else if (row.leave_type === 'Loss of Pay(LOP)') summary.year_to_date.lop_taken += days;
+            else if (row.leave_type === 'Permission') summary.year_to_date.permissions_count += parseInt(row.count) || 0;
+        });
+
+        monthLeaves.forEach(row => {
+            const days = parseFloat(row.total_days) || 0;
+            if (row.leave_type === 'Casual Leave') summary.current_month.casual_leave_taken += days;
+            else if (row.leave_type === 'Sick Leave') summary.current_month.sick_leave_taken += days;
+            else if (row.leave_type === 'Earned Leave') summary.current_month.earned_leave_taken += days;
+            else if (row.leave_type === 'Loss of Pay(LOP)') summary.current_month.lop_taken += days;
+            else if (row.leave_type === 'Permission') summary.current_month.permissions_count += parseInt(row.count) || 0;
+        });
+
+        summary.remaining.annual_casual_leave = Math.max(0, parseFloat((annualClLimit - summary.year_to_date.casual_leave_taken).toFixed(2)));
+        summary.remaining.monthly_casual_leave = Math.max(0, parseFloat((monthlyClLimit - summary.current_month.casual_leave_taken).toFixed(2)));
+
+        return summary;
     }
 }
 

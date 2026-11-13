@@ -236,6 +236,20 @@ const payrollRunController = {
             }
         });
 
+        // Performance Optimization: Batch fetch user weekoffs & company weekoffs once to eliminate N+1 loop queries
+        const WeekOff = require('../models/weekoffModel');
+        const CompanyWeekOff = require('../models/companyWeekoffModel');
+        const allUserWeekOffs = await WeekOff.getByUserIds(targetUserIds);
+        const userRulesMap = {};
+        allUserWeekOffs.forEach(w => {
+            if (!userRulesMap[w.userid]) userRulesMap[w.userid] = [];
+            userRulesMap[w.userid].push(w);
+        });
+
+        const companyRules = companyId ? await CompanyWeekOff.getByCompanyId(companyId) : [];
+        const companyRulesMap = { [companyId]: companyRules };
+        const cachedRules = { userRulesMap, companyRulesMap };
+
         const payrollEmployees = await Promise.all(employees.map(async (emp) => {
             const structureId = payrollRun.batch_allocation_id || emp.salary_structure_id;
             const structure = structureMap[structureId] || { name: 'Standard Salary', components: [] };
@@ -280,7 +294,7 @@ const payrollRunController = {
                 } else if (holidayDates.has(dateStr)) {
                     cumulativePaidDays += 1;
                 } else {
-                    const isWO = await isWeekOff(emp.id, emp.company, dateStr);
+                    const isWO = await isWeekOff(emp.id, emp.company, dateStr, cachedRules);
                     cumulativePaidDays += isWO ? 1 : 0;
                 }
             }
@@ -433,7 +447,7 @@ const payrollRunController = {
             return result;
         }));
 
-        const weekOffResults = await Promise.all(allDates.map(date => isWeekOff(null, companyId, date)));
+        const weekOffResults = await Promise.all(allDates.map(date => isWeekOff(null, companyId, date, cachedRules)));
         const weekOffs = weekOffResults.filter(Boolean).length;
 
         const actualWorkDays = totalCalendarDays - weekOffs;

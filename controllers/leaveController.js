@@ -8,6 +8,14 @@ const createLeave = async (req, res) => {
     try {
         let { employee_id, start_date, end_date, is_half_day, leave_type } = req.body;
 
+        if (!start_date || !end_date) {
+            return res.status(400).json({ message: "Start date and end date are required." });
+        }
+
+        if (start_date > end_date) {
+            return res.status(400).json({ message: "Start date cannot be after end date." });
+        }
+
         // Security: Non-admin users can only apply for leaves on their own behalf
         if (!isUserAdmin(req.user)) {
             employee_id = req.user.id;
@@ -18,6 +26,35 @@ const createLeave = async (req, res) => {
         // Convert is_half_day to actual boolean if it's a string from FormData
         if (typeof is_half_day === 'string') {
             is_half_day = is_half_day === 'true';
+        }
+
+        if (is_half_day && start_date !== end_date) {
+            return res.status(400).json({ message: "A half-day leave must be on a single date." });
+        }
+
+        // Check for overlapping active (Approved or Pending) leaves
+        const [existingLeaves] = await pool.execute(`
+            SELECT id, leave_type, start_date, end_date, status 
+            FROM leaves 
+            WHERE employee_id = ? AND status != 'Rejected' AND (start_date <= ? AND end_date >= ?)
+        `, [employee_id, end_date, start_date]);
+
+        if (existingLeaves.length > 0) {
+            return res.status(400).json({
+                message: `You already have an active leave request (${existingLeaves[0].leave_type} - ${existingLeaves[0].status}) for these dates.`
+            });
+        }
+
+        // Validate Leave Quota / Balance for Casual Leave
+        if (leave_type === 'Casual Leave') {
+            const requestedDays = is_half_day ? 0.5 : (Math.round((new Date(end_date) - new Date(start_date)) / (1000 * 60 * 60 * 24)) + 1);
+            const balance = await Leave.getLeaveBalance(employee_id);
+
+            if (!isUserAdmin(req.user) && requestedDays > balance.remaining.annual_casual_leave) {
+                return res.status(400).json({
+                    message: `Insufficient Casual Leave balance. You have ${balance.remaining.annual_casual_leave} days remaining for this year. Please apply for Loss of Pay(LOP) if you need additional leave.`
+                });
+            }
         }
 
         // Block leave if attendance exists, but only for full-day leaves (not half-days or permissions)
@@ -46,15 +83,18 @@ const createLeave = async (req, res) => {
         const userData = await User.findById(employee_id);
         const userName = userData?.employee_name || 'Employee';
 
-        // 1. Send to Reporting Manager if exists
+        // 1. Send to Reporting Manager(s) if exists
         if (userData && userData.reporting_manager) {
-            await sendNotification(io, {
-                user_id: userData.reporting_manager,
-                type: 'request',
-                title: 'New Leave Request',
-                message: `${userName} has requested ${leave_type} from ${start_date} to ${end_date}`,
-                extra_data: { leave_id: leaveId, type: 'leave_request' }
-            });
+            const managerIds = String(userData.reporting_manager).split(',').map(id => id.trim()).filter(Boolean);
+            for (const mgrId of managerIds) {
+                await sendNotification(io, {
+                    user_id: mgrId,
+                    type: 'request',
+                    title: 'New Leave Request',
+                    message: `${userName} has requested ${leave_type} from ${start_date} to ${end_date}`,
+                    extra_data: { leave_id: leaveId, type: 'leave_request' }
+                });
+            }
         }
 
         // 2. Send to Admin/Superadmin
@@ -103,10 +143,13 @@ const updateLeave = async (req, res) => {
         let isAuthorizedApprover = isAdmin;
 
         if (!isAdmin) {
-            // Check if caller is the employee's assigned reporting manager
+            // Check if caller is one of the employee's assigned reporting managers
             const [empRows] = await pool.execute('SELECT reporting_manager FROM users WHERE id = ?', [existing.employee_id]);
-            if (empRows.length > 0 && empRows[0].reporting_manager === req.user.id) {
-                isAuthorizedApprover = true;
+            if (empRows.length > 0 && empRows[0].reporting_manager) {
+                const mgrIds = String(empRows[0].reporting_manager).split(',').map(s => s.trim()).filter(Boolean);
+                if (mgrIds.includes(String(req.user.id))) {
+                    isAuthorizedApprover = true;
+                }
             }
             if (existing.team_lead_id === req.user.id) {
                 isAuthorizedApprover = true;
@@ -351,10 +394,26 @@ const deleteLeave = async (req, res) => {
     }
 };
 
+const getLeaveBalance = async (req, res) => {
+    try {
+        const requestedEmpId = req.params.employeeId || req.query.employeeId;
+        let targetEmpId = req.user.id;
+        if (requestedEmpId && isUserAdmin(req.user)) {
+            targetEmpId = requestedEmpId;
+        }
+        const balance = await Leave.getLeaveBalance(targetEmpId);
+        res.status(200).json(balance);
+    } catch (error) {
+        console.error('Error fetching leave balance:', error);
+        res.status(500).json({ message: 'Error fetching leave balance', error: error.message });
+    }
+};
+
 module.exports = {
     createLeave,
     getLeaves,
     updateLeave,
     deleteLeave,
-    generateLeaveReport
+    generateLeaveReport,
+    getLeaveBalance
 };

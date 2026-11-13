@@ -1,5 +1,6 @@
 const { pool } = require('../Config/dbConfig');
 const { sendNotification } = require('../utils/notificationHelper');
+const { isUserAdmin } = require('../middleware/authMiddleware');
 
 // @desc    Get all helpdesk tickets with optional filters
 // @route   GET /api/helpdesk
@@ -10,6 +11,12 @@ const getTickets = async (req, res) => {
 
         let whereClauses = [];
         let params = [];
+
+        // Security: Non-admin employees can only view their own tickets
+        if (!isUserAdmin(req.user)) {
+            whereClauses.push('t.user_id = ?');
+            params.push(req.user.id);
+        }
 
         if (status && status !== 'All') {
             whereClauses.push('t.status = ?');
@@ -187,7 +194,8 @@ const getStats = async (req, res) => {
 const createTicket = async (req, res) => {
     try {
         const { user_id, category, subject, description, priority = 'Medium', assigned_to } = req.body;
-        const effectiveUserId = user_id || req.user?.id;
+        // Security: Non-admin users can only create tickets on their own behalf
+        const effectiveUserId = isUserAdmin(req.user) && user_id ? user_id : req.user?.id;
 
         if (!effectiveUserId) {
             return res.status(400).json({ message: 'User ID is required' });
@@ -254,6 +262,17 @@ const updateTicketStatus = async (req, res) => {
 
         if (!status) {
             return res.status(400).json({ message: 'Status is required' });
+        }
+
+        // Security: Non-admin users can only update/close their own tickets
+        if (!isUserAdmin(req.user)) {
+            const [[existingTicket]] = await pool.execute('SELECT user_id FROM helpdesk_tickets WHERE id = ?', [id]);
+            if (!existingTicket) {
+                return res.status(404).json({ message: 'Ticket not found' });
+            }
+            if (String(existingTicket.user_id) !== String(req.user.id)) {
+                return res.status(403).json({ message: 'Forbidden: You cannot modify tickets submitted by other users' });
+            }
         }
 
         const resolvedAt = ['Resolved', 'Closed'].includes(status) ? new Date() : null;

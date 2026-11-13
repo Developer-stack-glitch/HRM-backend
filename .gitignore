@@ -16,6 +16,8 @@ Config/serviceAccountKey.json
 # Runtime data / Uploads
 uploads/
 tmp/
+*.sql
+
 
 # Temporary / Debug files
 *_info.json

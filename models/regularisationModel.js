@@ -29,17 +29,17 @@ class Regularisation {
         const params = [];
 
         if (filters.reporting_manager && filters.personal_user_id) {
-            const condition = ' AND (u.reporting_manager = ? OR r.user_id = ?)';
+            const condition = ' AND (u.reporting_manager = ? OR FIND_IN_SET(?, u.reporting_manager) > 0 OR r.user_id = ?)';
             query += condition; countQuery += condition;
-            params.push(filters.reporting_manager, filters.personal_user_id);
+            params.push(filters.reporting_manager, filters.reporting_manager, filters.personal_user_id);
         } else if (filters.user_id) {
             const condition = ' AND r.user_id = ?';
             query += condition; countQuery += condition;
             params.push(filters.user_id);
         } else if (filters.reporting_manager) {
-            const condition = ' AND u.reporting_manager = ?';
+            const condition = ' AND (u.reporting_manager = ? OR FIND_IN_SET(?, u.reporting_manager) > 0)';
             query += condition; countQuery += condition;
-            params.push(filters.reporting_manager);
+            params.push(filters.reporting_manager, filters.reporting_manager);
         }
         if (filters.status) {
             const condition = ' AND r.status = ?';

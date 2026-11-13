@@ -95,9 +95,8 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 web_clock_in_allowed TINYINT(1) DEFAULT 1,
                 reset_token VARCHAR(255) DEFAULT NULL,
                 reset_token_expiry DATETIME DEFAULT NULL,
-                reporting_manager INT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (reporting_manager) REFERENCES users(id) ON DELETE SET NULL
+                reporting_manager VARCHAR(255) DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 

@@ -14,11 +14,19 @@ const config = {
 
 const pool = mysql.createPool(config);
 
+const tenantPools = new Map();
+
 const getTenantPool = (dbName) => {
-    return mysql.createPool({
-        ...config,
-        database: dbName
-    });
+    if (!dbName || dbName === process.env.DB_NAME) {
+        return pool;
+    }
+    if (!tenantPools.has(dbName)) {
+        tenantPools.set(dbName, mysql.createPool({
+            ...config,
+            database: dbName
+        }));
+    }
+    return tenantPools.get(dbName);
 };
 
 module.exports = {

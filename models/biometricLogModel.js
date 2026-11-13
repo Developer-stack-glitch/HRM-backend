@@ -47,7 +47,7 @@ class BiometricLog {
 
     static async getByDateRange(startDate, endDate) {
         const [rows] = await pool.execute(
-            'SELECT * FROM biometric_logs WHERE date BETWEEN ? AND ? ORDER BY date DESC, time ASC',
+            'SELECT * FROM biometric_logs WHERE date BETWEEN ? AND ? ORDER BY date DESC, punch_in ASC',
             [startDate, endDate]
         );
         return rows;

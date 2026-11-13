@@ -143,6 +143,8 @@ router.put('/holidays/:id', protect, adminOnly, holidayController.updateHoliday)
 router.delete('/holidays/:id', protect, adminOnly, holidayController.deleteHoliday);
 
 // --- Leave Routes ---
+router.get('/leaves/balance', protect, leaveController.getLeaveBalance);
+router.get('/leaves/balance/:employeeId', protect, leaveController.getLeaveBalance);
 router.post('/leaves/', protect, upload.array('documents', 5), leaveController.createLeave);
 router.get('/leaves/', protect, leaveController.getLeaves);
 router.get('/leaves/generate-report', protect, adminOnly, leaveController.generateLeaveReport);
