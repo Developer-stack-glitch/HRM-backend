@@ -6,6 +6,7 @@ const ExcelJS = require('exceljs');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { sendOnboardingEmails, generateRandomPassword } = require('../utils/onboardingEmail');
+const { verifySmtpConnection, sendEmail } = require('../utils/emailService');
 const { isUserAdmin } = require('../middleware/authMiddleware');
 
 const createUser = async (req, res) => {
@@ -131,19 +132,25 @@ const createUser = async (req, res) => {
 
         // Dispatch onboarding welcome email with credentials to both official and personal email addresses
         let emailResults = [];
+        let emailWarning = null;
         try {
             const emailDispatch = await sendOnboardingEmails({ userId, rawPassword });
             if (emailDispatch && emailDispatch.results) {
                 emailResults = emailDispatch.results;
+                if (!emailDispatch.success) {
+                    emailWarning = emailDispatch.summary || 'Failed to deliver onboarding email';
+                }
             }
         } catch (emailErr) {
             console.error('Non-blocking onboarding email error:', emailErr);
+            emailWarning = emailErr.message;
         }
 
         res.status(201).json({ 
             message: 'User created successfully', 
             userId,
-            emailDispatched: emailResults
+            emailDispatched: emailResults,
+            emailWarning
         });
     } catch (error) {
         console.error('Error creating user:', error);
@@ -1066,6 +1073,13 @@ const resendOnboardingEmail = async (req, res) => {
         // Dispatch onboarding email with new credentials
         const emailDispatch = await sendOnboardingEmails({ userId: id, rawPassword });
 
+        if (emailDispatch && !emailDispatch.success) {
+            return res.status(502).json({
+                message: `Failed to deliver onboarding email: ${emailDispatch.summary || 'SMTP failure'}`,
+                emailDispatched: emailDispatch.results || []
+            });
+        }
+
         res.status(200).json({
             message: 'Onboarding email resent successfully with new generated password',
             emailDispatched: emailDispatch?.results || []
@@ -1073,6 +1087,64 @@ const resendOnboardingEmail = async (req, res) => {
     } catch (error) {
         console.error('Error resending onboarding email:', error);
         res.status(500).json({ message: 'Failed to resend onboarding email', error: error.message });
+    }
+};
+
+const testSmtp = async (req, res) => {
+    try {
+        const testEmail = req.body?.testEmail || req.query?.testEmail;
+        const diag = await verifySmtpConnection();
+
+        if (!diag.success) {
+            return res.status(502).json({
+                message: 'SMTP connection or authentication failed',
+                diagnostic: diag
+            });
+        }
+
+        let sendResult = null;
+        if (testEmail) {
+            try {
+                const info = await sendEmail({
+                    to: testEmail,
+                    subject: 'HRMS SMTP Diagnostic Test',
+                    text: 'This is a test email sent from the HRMS system to verify SMTP configuration.',
+                    html: `
+                        <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 20px auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px;">
+                            <h2 style="color: #2563eb; margin-top: 0;">HRMS SMTP Test Succeeded</h2>
+                            <p style="color: #475569; font-size: 14px; line-height: 1.6;">
+                                Your email delivery configuration is working correctly. Onboarding emails can now be sent to newly registered employees.
+                            </p>
+                            <div style="background-color: #f8fafc; padding: 12px; border-radius: 6px; font-size: 13px; color: #64748b; margin-top: 16px;">
+                                Timestamp: ${new Date().toISOString()}<br/>
+                                Recipient: ${testEmail}
+                            </div>
+                        </div>
+                    `
+                });
+                sendResult = {
+                    deliveredTo: testEmail,
+                    response: info.response || info.messageId
+                };
+            } catch (sendErr) {
+                return res.status(502).json({
+                    message: `SMTP connection established, but test email delivery to ${testEmail} failed: ${sendErr.message}`,
+                    error: sendErr.message,
+                    diagnostic: diag
+                });
+            }
+        }
+
+        return res.status(200).json({
+            message: testEmail
+                ? `SMTP connection verified and test email delivered to ${testEmail}`
+                : 'SMTP connection established and authenticated successfully',
+            diagnostic: diag,
+            sendResult
+        });
+    } catch (error) {
+        console.error('Error in testSmtp:', error);
+        res.status(500).json({ message: 'Error running SMTP diagnostic', error: error.message });
     }
 };
 
@@ -1089,5 +1161,6 @@ module.exports = {
     downloadReferenceIds,
     bulkUploadUsers,
     checkDuplicate,
-    resendOnboardingEmail
+    resendOnboardingEmail,
+    testSmtp
 };

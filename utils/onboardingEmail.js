@@ -331,8 +331,13 @@ const sendOnboardingEmails = async (firstArg, secondArg) => {
         }
 
         const companyName = company?.name || 'Human Resource Team';
-        const companyEmail = company?.email || process.env.SMTP_FROM || process.env.SMTP_USER || 'hr@acte.in';
-        const senderFrom = companyName ? `"${companyName}" <${companyEmail}>` : companyEmail;
+        const companyEmail = company?.email || 'hr@actetechnologies.com';
+        const smtpAuthEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'hr@acte.in';
+
+        // Google SMTP requires authenticated sender address in From header,
+        // with company display name, and companyEmail passed as replyTo so employee replies go to HR.
+        const senderFrom = companyName ? `"${companyName}" <${smtpAuthEmail}>` : smtpAuthEmail;
+        const replyToEmail = companyEmail;
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
         const loginUrl = `${frontendUrl}/login`;
 
@@ -399,6 +404,7 @@ const sendOnboardingEmails = async (firstArg, secondArg) => {
 
             return sendEmail({
                 from: senderFrom,
+                replyTo: replyToEmail,
                 to: rec.email,
                 subject,
                 html,
@@ -420,7 +426,20 @@ const sendOnboardingEmails = async (firstArg, secondArg) => {
 
         const results = await Promise.all(dispatchPromises);
         console.log('Onboarding email dispatch results:', results);
-        return { success: true, results };
+
+        const allFailed = results.length > 0 && results.every(r => !r.success);
+        const someFailed = results.some(r => !r.success);
+
+        return {
+            success: !allFailed,
+            results,
+            hasFailures: someFailed,
+            summary: allFailed
+                ? `Failed to send email: ${results[0]?.error || 'SMTP delivery failure'}`
+                : someFailed
+                    ? `Sent to some recipients, but with errors`
+                    : `Sent successfully to all recipients`
+        };
     } catch (error) {
         console.error('Error in sendOnboardingEmails:', error);
         return { success: false, error: error.message };
