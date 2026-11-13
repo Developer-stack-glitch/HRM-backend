@@ -84,6 +84,7 @@ router.get('/users/', protect, userController.getUsers);
 router.get('/users/:id', protect, userController.getUserById);
 router.put('/users/:id', protect, upload.fields(documentFields), userController.updateUser);
 router.delete('/users/:id', protect, adminOnly, userController.deleteUser);
+router.post('/users/:id/resend-onboarding', protect, adminOnly, userController.resendOnboardingEmail);
 
 // --- Organization Routes ---
 router.post('/organization/companies', protect, superAdminOnly, upload.fields([{ name: 'logo', maxCount: 1 }]), orgController.createCompany);

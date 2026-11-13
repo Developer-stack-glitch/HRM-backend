@@ -4,6 +4,7 @@ const Organization = require('../models/organizationModel');
 const { pool } = require('../Config/dbConfig');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
+const bcrypt = require('bcryptjs');
 const { sendOnboardingEmails, generateRandomPassword } = require('../utils/onboardingEmail');
 const { isUserAdmin } = require('../middleware/authMiddleware');
 
@@ -112,11 +113,19 @@ const createUser = async (req, res) => {
             }
         }
 
-        // Auto-generate random alphanumeric password (letters & numbers) if not provided or if default
-        if (!userData.password || userData.password === 'password123' || userData.password === 'acte@123') {
-            userData.password = generateRandomPassword(10);
+        // 5. Ensure name and email are always set
+        if (!userData.name && userData.employee_name) {
+            userData.name = userData.employee_name;
         }
-        const rawPassword = userData.password;
+        if (!userData.email) {
+            userData.email = userData.off_mail_id || userData.per_mail_id;
+        }
+
+        // Auto-generate random alphanumeric password (letters & numbers) for newly created employee
+        const rawPassword = (!userData.password || userData.password === 'password123' || userData.password === 'acte@123')
+            ? generateRandomPassword(10)
+            : userData.password;
+        userData.password = rawPassword;
 
         const userId = await User.create(userData);
 
@@ -956,8 +965,19 @@ const bulkUploadUsers = async (req, res) => {
                 userData.name = userData.employee_name;
                 userData.email = userData.off_mail_id;
 
-                await User.create(userData);
+                // Auto-generate random alphanumeric password and dispatch onboarding email
+                const rawPassword = generateRandomPassword(10);
+                userData.password = rawPassword;
+
+                const userId = await User.create(userData);
                 summary.success++;
+
+                // Non-blocking dispatch of onboarding email with credentials
+                try {
+                    await sendOnboardingEmails({ userId, rawPassword });
+                } catch (bulkEmailErr) {
+                    console.error(`Bulk upload onboarding email error for user ${userId} (${userData.email}):`, bulkEmailErr.message);
+                }
             } catch (err) {
                 summary.failed++;
                 summary.errors.push({ row: rowData, message: err.message });
@@ -1029,6 +1049,33 @@ const checkDuplicate = async (req, res) => {
     }
 };
 
+const resendOnboardingEmail = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = await User.findById(id);
+        if (!user) {
+            return res.status(404).json({ message: 'Employee not found' });
+        }
+
+        // Generate a new secure random password
+        const rawPassword = generateRandomPassword(10);
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(rawPassword, salt);
+        await pool.execute('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, id]);
+
+        // Dispatch onboarding email with new credentials
+        const emailDispatch = await sendOnboardingEmails({ userId: id, rawPassword });
+
+        res.status(200).json({
+            message: 'Onboarding email resent successfully with new generated password',
+            emailDispatched: emailDispatch?.results || []
+        });
+    } catch (error) {
+        console.error('Error resending onboarding email:', error);
+        res.status(500).json({ message: 'Failed to resend onboarding email', error: error.message });
+    }
+};
+
 module.exports = {
     createUser,
     getUsers,
@@ -1041,5 +1088,6 @@ module.exports = {
     downloadBulkTemplate,
     downloadReferenceIds,
     bulkUploadUsers,
-    checkDuplicate
+    checkDuplicate,
+    resendOnboardingEmail
 };

@@ -291,12 +291,21 @@ const buildOnboardingEmailHtml = ({
 
 /**
  * Dispatches onboarding emails to both official and personal emails with inline logo attachment
- * @param {Object} params
- * @param {number|string} params.userId
- * @param {string} params.rawPassword
+ * @param {Object|number|string} firstArg - Either { userId, rawPassword } or userId
+ * @param {string} [secondArg] - rawPassword if firstArg is userId
  */
-const sendOnboardingEmails = async ({ userId, rawPassword }) => {
+const sendOnboardingEmails = async (firstArg, secondArg) => {
     try {
+        let userId;
+        let rawPassword;
+        if (firstArg && typeof firstArg === 'object') {
+            userId = firstArg.userId;
+            rawPassword = firstArg.rawPassword;
+        } else {
+            userId = firstArg;
+            rawPassword = secondArg;
+        }
+
         if (!userId) return { success: false, message: 'User ID is required' };
 
         // 1. Fetch full user details with names resolved
@@ -309,8 +318,12 @@ const sendOnboardingEmails = async ({ userId, rawPassword }) => {
         // 2. Fetch company details for branding
         let company = null;
         if (user.company) {
-            const [[c]] = await pool.execute('SELECT * FROM companies WHERE id = ?', [user.company]);
-            company = c;
+            try {
+                const [[c]] = await pool.execute('SELECT * FROM companies WHERE id = ? OR name = ?', [user.company, user.company]);
+                company = c;
+            } catch (cErr) {
+                console.warn('Company lookup note:', cErr.message);
+            }
         }
         if (!company) {
             const [[c]] = await pool.execute('SELECT * FROM companies LIMIT 1');
@@ -319,6 +332,7 @@ const sendOnboardingEmails = async ({ userId, rawPassword }) => {
 
         const companyName = company?.name || 'Human Resource Team';
         const companyEmail = company?.email || process.env.SMTP_FROM || process.env.SMTP_USER || 'hr@acte.in';
+        const senderFrom = companyName ? `"${companyName}" <${companyEmail}>` : companyEmail;
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
         const loginUrl = `${frontendUrl}/login`;
 
@@ -384,6 +398,7 @@ const sendOnboardingEmails = async ({ userId, rawPassword }) => {
             });
 
             return sendEmail({
+                from: senderFrom,
                 to: rec.email,
                 subject,
                 html,
