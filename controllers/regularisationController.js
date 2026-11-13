@@ -104,7 +104,7 @@ const createRequest = async (req, res) => {
 const getRequests = async (req, res) => {
     try {
         const filters = { ...req.query };
-        if (req.user.role === 'employee') {
+        if (!isUserAdmin(req.user)) {
             // Include their own requests AND requests from their reportees
             filters.reporting_manager = req.user.id;
             filters.personal_user_id = req.user.id;
@@ -229,7 +229,7 @@ const updateStatus = async (req, res) => {
 const getCounts = async (req, res) => {
     try {
         const userId = req.user.id;
-        const userRole = req.user.role;
+        const isAdmin = isUserAdmin(req.user);
         const { startDate, endDate, date } = req.query;
 
         let query = '';
@@ -251,7 +251,7 @@ const getCounts = async (req, res) => {
             dateParams.push(date);
         }
 
-        if (userRole === 'admin' || userRole === 'superadmin') {
+        if (isAdmin) {
             query = `SELECT r.status, COUNT(*) as count FROM regularisations r WHERE 1=1 ${dateCondition} GROUP BY r.status`;
             params.push(...dateParams);
         } else {
@@ -278,9 +278,9 @@ const getCounts = async (req, res) => {
         rows.forEach(row => {
             // Map case-insensitive status to the keys in the counts object
             const status = row.status.charAt(0).toUpperCase() + row.status.slice(1).toLowerCase();
-            if (status === 'Pending') counts.Pending = row.count;
-            else if (status === 'Approved') counts.Approved = row.count;
-            else if (status === 'Rejected') counts.Rejected = row.count;
+            if (status === 'Pending') counts.Pending = Number(row.count) || 0;
+            else if (status === 'Approved') counts.Approved = Number(row.count) || 0;
+            else if (status === 'Rejected') counts.Rejected = Number(row.count) || 0;
         });
 
         // Calculate total Requested count
