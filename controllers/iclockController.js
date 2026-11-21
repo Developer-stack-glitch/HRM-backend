@@ -1,7 +1,7 @@
 const { pool } = require('../Config/dbConfig');
 const BiometricPunch = require('../models/biometricPunchModel');
 const BiometricLog = require('../models/biometricLogModel');
-const { Attendance } = require('../models/attendanceModel');
+const Attendance = require('../models/attendanceModel');
 const { User } = require('../models/userModel');
 const ShiftRoster = require('../models/shiftRosterModel');
 
