@@ -213,9 +213,25 @@ const syncPunchesToAttendance = async (punches, io = null) => {
             const userPunches = await BiometricPunch.getPunchesForUserDate(emp_id, date);
             if (userPunches.length === 0) continue;
 
-            const punchTimes = userPunches.map(p => p.time).sort();
-            const punch_in = punchTimes[0];
-            const punch_out = punchTimes.length > 1 ? punchTimes[punchTimes.length - 1] : null;
+            // Check if record exists in attendance (could be from HRMS web/app clock-in)
+            const [existing] = await pool.execute(
+                'SELECT * FROM attendance WHERE user_id = ? AND date = ?',
+                [user.id, date]
+            );
+
+            // Merge all punches: biometric punches + HRMS web/mobile application punches
+            const allPunches = [...userPunches.map(p => p.time)];
+            if (existing.length > 0) {
+                const attn = existing[0];
+                if (attn.punch_in && attn.punch_in !== '00:00' && attn.punch_in !== '--:--') allPunches.push(attn.punch_in);
+                if (attn.punch_out && attn.punch_out !== '00:00' && attn.punch_out !== '--:--') allPunches.push(attn.punch_out);
+                if (attn.actual_punch_in && attn.actual_punch_in !== '00:00') allPunches.push(attn.actual_punch_in);
+                if (attn.actual_punch_out && attn.actual_punch_out !== '00:00') allPunches.push(attn.actual_punch_out);
+            }
+
+            const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '--:--' && p !== '00:00'))].sort();
+            const punch_in = uniquePunches.length > 0 ? uniquePunches[0] : null;
+            const punch_out = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : null;
 
             // Shift calculation
             const roster = await ShiftRoster.getRoster(date, date);
@@ -240,12 +256,6 @@ const syncPunchesToAttendance = async (punches, io = null) => {
             }
 
             const syncStatus = (punch_in && !punch_out) ? 'Incomplete' : 'Present';
-
-            // Check if record exists in attendance
-            const [existing] = await pool.execute(
-                'SELECT * FROM attendance WHERE user_id = ? AND date = ?',
-                [user.id, date]
-            );
 
             if (existing.length > 0) {
                 const attn = existing[0];

@@ -1100,8 +1100,30 @@ exports.getTodayStatus = async (req, res) => {
             return res.json({ status: 'not_clocked_in', shiftInfo });
         }
 
+        let attn = attendance[0];
 
-        const attn = attendance[0];
+        // If clocked in but punch_out is missing, check if biometric punch out occurred today
+        if (attn.punch_in && (!attn.punch_out || attn.punch_out === '--:--' || attn.punch_out === '00:00')) {
+            const [uRows] = await pool.execute('SELECT biometric_id, emp_id FROM users WHERE id = ?', [userId || null]);
+            if (uRows.length > 0) {
+                const userBioId = uRows[0].biometric_id || uRows[0].emp_id;
+                const logs = await fetchBiometricLogsInternal(date, date);
+                const userLogs = logs.filter(l => String(l.emp_id).trim() === String(userBioId).trim() && l.time > attn.punch_in);
+                if (userLogs.length > 0) {
+                    userLogs.sort((a, b) => a.time.localeCompare(b.time));
+                    const latestOut = userLogs[userLogs.length - 1].time;
+                    const total_hours = calculateTotalHours(attn.punch_in, latestOut);
+                    await pool.execute(
+                        'UPDATE attendance SET punch_out = ?, actual_punch_out = ?, total_hours = ?, status = "Present" WHERE id = ?',
+                        [latestOut, latestOut, total_hours, attn.id]
+                    );
+                    attn.punch_out = latestOut;
+                    attn.actual_punch_out = latestOut;
+                    attn.total_hours = total_hours;
+                    attn.status = 'Present';
+                }
+            }
+        }
 
         // 2. Get active break
         const [activeBreak] = await pool.execute(
@@ -1208,6 +1230,23 @@ exports.webClockIn = async (req, res) => {
         const { sendNotification } = require('../utils/notificationHelper');
         const userName = req.user.name || req.user.employee_name || 'Employee';
 
+        // Record web punch into biometric_punches table
+        try {
+            const BiometricPunch = require('../models/biometricPunchModel');
+            await BiometricPunch.createBulk([{
+                device_sn: 'WEB_APP',
+                device_name: 'HRMS Web App',
+                emp_id: userBioId,
+                punch_time: `${date} ${web_punch_in}`,
+                date,
+                time: web_punch_in,
+                verify_type: 99,
+                punch_state: 0
+            }]);
+        } catch (e) {
+            console.warn('[WebClockIn] biometric_punches insert notice:', e.message);
+        }
+
         if (existing.length > 0) {
             await pool.execute(
                 'UPDATE attendance SET punch_in = ?, punch_out = ?, late_punch_in = ?, late_punch_out = ?, early_punch_out = ?, total_hours = ?, status = ?, latitude_in = ?, longitude_in = ?, punch_in_location = ?, is_web_punch = 1 WHERE id = ?',
@@ -1281,6 +1320,23 @@ exports.webClockOut = async (req, res) => {
         const allPunches = [web_punch_out, ...machinePunches];
         if (attn.punch_in) allPunches.push(attn.punch_in);
         if (attn.punch_out) allPunches.push(attn.punch_out);
+
+        // Record web punch out into biometric_punches table
+        try {
+            const BiometricPunch = require('../models/biometricPunchModel');
+            await BiometricPunch.createBulk([{
+                device_sn: 'WEB_APP',
+                device_name: 'HRMS Web App',
+                emp_id: userBioId,
+                punch_time: `${date} ${web_punch_out}`,
+                date,
+                time: web_punch_out,
+                verify_type: 99,
+                punch_state: 1
+            }]);
+        } catch (e) {
+            console.warn('[WebClockOut] biometric_punches insert notice:', e.message);
+        }
 
         const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '00:00' && p !== '--:--'))].sort();
         // Check Shift Roster for override
