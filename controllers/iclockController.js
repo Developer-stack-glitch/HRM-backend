@@ -207,6 +207,7 @@ const syncPunchesToAttendance = async (punches, io = null) => {
             }
         }
 
+
         for (const [key, { user, date, emp_id, device_name }] of userDateSet.entries()) {
             // Get all punches for this user on this date from DB
             const userPunches = await BiometricPunch.getPunchesForUserDate(emp_id, date);
