@@ -144,11 +144,20 @@ const serveSecureUpload = (req, res, next) => {
 app.use('/api/uploads', serveSecureUpload);
 app.use('/uploads', serveSecureUpload);
 
+// Biometric ADMS (Cloud Push Protocol for eSSL / ZKTeco devices)
+app.use('/iclock', require('./routes/iclockRoutes'));
+app.use('/api/iclock', require('./routes/iclockRoutes'));
+
 // Database connection test
 pool.getConnection()
     .then(connection => {
         console.log('Database connected successfully');
         connection.release();
+        // Ensure biometric_punches table exists for ADMS push
+        const BiometricPunch = require('./models/biometricPunchModel');
+        BiometricPunch.ensureTable().catch(err => {
+            console.warn('[BiometricPunch] Ensure table notice:', err.message);
+        });
     })
     .catch(err => {
         console.error('Database connection failed:', err.message);

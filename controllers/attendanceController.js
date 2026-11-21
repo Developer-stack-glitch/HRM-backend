@@ -764,6 +764,32 @@ const fetchBiometricLogsInternal = async (fromDate, toDate, forceRefresh = false
             const fDate = `${fDateStr} 00:00`;
             const tDate = `${tDateStr} 23:59`;
 
+            // 1. Check local biometric_punches table (populated directly by ADMS push when machine is on)
+            let admsPunches = [];
+            try {
+                const BiometricPunch = require('../models/biometricPunchModel');
+                admsPunches = await BiometricPunch.getByDateRange(fDateStr, tDateStr);
+            } catch (admsErr) {
+                console.warn('[Biometric] Local biometric_punches query notice:', admsErr.message);
+            }
+
+            if (admsPunches && admsPunches.length > 0) {
+                const mappedLogs = admsPunches.map(p => ({
+                    emp_id: p.emp_id,
+                    date: p.date,
+                    time: p.time,
+                    timestamp: p.timestamp,
+                    device_name: p.device_name || 'Biometric Device'
+                }));
+                biometricCache.set(cacheKey, {
+                    timestamp: Date.now(),
+                    data: mappedLogs,
+                    inFlightPromise: null
+                });
+                return mappedLogs;
+            }
+
+            // 2. Fallback to SOAP API (if legacy eSSL desktop service is configured and reachable)
             const biometricApiUrl = process.env.BIOMETRIC_API_URL || 'http://210.18.138.85:80/iclock/webapiservice.asmx?op=GetTransactionsLog';
             const biometricUser = process.env.BIOMETRIC_API_USER || 'API';
             const biometricPassword = process.env.BIOMETRIC_API_PASSWORD || 'Essl@123';

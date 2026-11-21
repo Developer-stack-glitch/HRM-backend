@@ -756,6 +756,25 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
             )
         `);
 
+        await tenantPool.execute(`
+            CREATE TABLE IF NOT EXISTS biometric_punches (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                device_sn VARCHAR(100) NOT NULL,
+                device_name VARCHAR(255) DEFAULT NULL,
+                emp_id VARCHAR(50) NOT NULL,
+                punch_time DATETIME NOT NULL,
+                date DATE NOT NULL,
+                time TIME NOT NULL,
+                verify_type INT DEFAULT 0,
+                punch_state INT DEFAULT 0,
+                work_code VARCHAR(50) DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_punch (device_sn, emp_id, punch_time),
+                INDEX idx_date (date),
+                INDEX idx_emp_date (emp_id, date)
+            )
+        `);
+
         // 7. Statutory Compliance Settings
         await tenantPool.execute(`
             CREATE TABLE IF NOT EXISTS compliance_pf_settings (
