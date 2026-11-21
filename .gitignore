@@ -18,6 +18,8 @@ uploads/
 tmp/
 *.sql
 
+# Server configuration
+server.js
 
 # Temporary / Debug files
 *_info.json
