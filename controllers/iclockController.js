@@ -327,6 +327,9 @@ const syncPunchesToAttendance = async (punches, io = null) => {
     }
 };
 
+// Track devices that have been commanded to do a full historical sync
+const syncedDevices = new Map();
+
 /**
  * GET /iclock/cdata
  * Device handshake, initialization options, and heartbeat
@@ -341,12 +344,14 @@ exports.handleCDataGet = async (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
     if (options.toLowerCase() === 'all' || req.query.pushver) {
-        // Full ADMS handshake options configuration
+        // Full ADMS handshake options configuration.
+        // Setting Stamp=0 and ATTLOGStamp=0 instructs the machine to upload all historical punches
         const configResponse = [
             `GET OPTION FROM: ${sn}`,
-            `Stamp=9999`,
-            `OpStamp=9999`,
+            `Stamp=0`,
+            `OpStamp=0`,
             `PhotoStamp=0`,
+            `ATTLOGStamp=0`,
             `ErrorDelay=30`,
             `Delay=10`,
             `TransTimes=00:00;14:05`,
@@ -359,7 +364,7 @@ exports.handleCDataGet = async (req, res) => {
             ``
         ].join('\r\n');
 
-        console.log(`[ADMS] Handshake options sent to device SN: ${sn}`);
+        console.log(`[ADMS] Handshake options sent to device SN: ${sn} (Stamp=0 for full sync)`);
         return res.status(200).send(configResponse);
     }
 
@@ -428,8 +433,18 @@ exports.handleCDataPost = async (req, res) => {
  * Polling endpoint for pending server-side commands for the device
  */
 exports.handleGetRequest = async (req, res) => {
+    const sn = req.query.SN || req.query.sn || 'UNKNOWN';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    // Return OK when no commands are queued
+
+    // Trigger full upload of historical ATTLOG once per device reboot/session
+    const lastCmdTime = syncedDevices.get(sn) || 0;
+    const now = Date.now();
+    if (now - lastCmdTime > 10 * 60 * 1000) { // Send query command once every 10 mins if needed
+        syncedDevices.set(sn, now);
+        console.log(`[ADMS] Ordering device ${sn} to push all historical attendance logs (DATA QUERY ATTLOG)...`);
+        return res.status(200).send(`C:101:DATA QUERY ATTLOG\r\nC:102:CHECK`);
+    }
+
     return res.status(200).send('OK');
 };
 
