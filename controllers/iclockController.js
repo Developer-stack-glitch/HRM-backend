@@ -251,11 +251,16 @@ const syncPunchesToAttendance = async (punches, io = null) => {
                     early_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'early_out');
                 }
             }
-            if (punch_in && punch_out) {
-                total_hours = calculateTotalHours(punch_in, punch_out);
+            let finalPunchOut = punch_out;
+            if (punch_in && !punch_out && date < getISTDate() && shiftEnd) {
+                finalPunchOut = shiftEnd;
             }
 
-            const syncStatus = (punch_in && !punch_out) ? 'Incomplete' : 'Present';
+            if (punch_in && finalPunchOut) {
+                total_hours = calculateTotalHours(punch_in, finalPunchOut);
+            }
+
+            const syncStatus = 'Present';
 
             if (existing.length > 0) {
                 const attn = existing[0];
@@ -264,9 +269,9 @@ const syncPunchesToAttendance = async (punches, io = null) => {
                     await Attendance.update(attn.id, {
                         ...attn,
                         punch_in: punch_in || attn.punch_in,
-                        punch_out: punch_out || attn.punch_out,
+                        punch_out: finalPunchOut || attn.punch_out,
                         actual_punch_in: punch_in || attn.actual_punch_in,
-                        actual_punch_out: punch_out || attn.actual_punch_out,
+                        actual_punch_out: finalPunchOut || attn.actual_punch_out,
                         late_punch_in,
                         late_punch_out,
                         early_punch_out,
@@ -280,9 +285,9 @@ const syncPunchesToAttendance = async (punches, io = null) => {
                     user_id: user.id,
                     date,
                     punch_in,
-                    punch_out,
+                    punch_out: finalPunchOut,
                     actual_punch_in: punch_in,
-                    actual_punch_out: punch_out,
+                    actual_punch_out: finalPunchOut,
                     late_punch_in,
                     late_punch_out,
                     early_punch_out,

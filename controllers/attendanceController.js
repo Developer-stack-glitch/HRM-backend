@@ -375,11 +375,14 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
                             status = 'Week Off';
                             working_day_value = 1.0;
                         } else {
-                            status = 'Incomplete';
-                            working_day_value = 0.0; // Forgot to punch out = 0.0 value
+                            status = 'Present';
+                            working_day_value = (leaveDetail && leaveDetail.is_half_day) ? 0.5 : 1.0;
+                            if (!punch_out && shiftEnd) {
+                                punch_out = shiftEnd;
+                                total_hours = calculateTotalHours(punch_in, punch_out);
+                            }
                         }
                     }
-                    total_hours = "00:00";
                 } else {
                     status = 'Present';
                 }

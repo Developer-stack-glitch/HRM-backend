@@ -148,13 +148,22 @@ async function run() {
         if (uniquePunches.length === 0) continue;
 
         const punch_in = uniquePunches[0];
-        const punch_out = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : null;
+        let finalPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : null;
 
         const rosterEntry = rosterMap[`${user.id}_${date}`];
         const activeShiftName = rosterEntry ? rosterEntry.shift_name : user.shift;
-        const shiftObj = shiftMap[activeShiftName] || shiftMap[user.shift] || {};
-        const shiftStart = shiftObj.start_time || null;
-        const shiftEnd = shiftObj.end_time || null;
+        const shiftObj = shiftMap[activeShiftName] || shiftMap[user.shift] || shiftMap['SECOND SHIFT'] || { start_time: '09:30:00', end_time: '18:30:00' };
+        const shiftStart = shiftObj.start_time || '09:30:00';
+        const shiftEnd = shiftObj.end_time || '18:30:00';
+
+        const todayStr = '2026-11-23';
+        if (punch_in && !finalPunchOut && date < todayStr && shiftEnd) {
+            if (punch_in < '15:00:00') {
+                finalPunchOut = shiftEnd;
+            } else {
+                finalPunchOut = punch_in;
+            }
+        }
 
         let late_punch_in = "00:00:00";
         let late_punch_out = "00:00:00";
@@ -163,17 +172,17 @@ async function run() {
 
         if (shiftStart && shiftEnd) {
             if (punch_in) late_punch_in = calculateTimeDiff(punch_in, shiftStart, 'late_in');
-            if (punch_out) {
-                late_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'late_out');
-                early_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'early_out');
+            if (finalPunchOut) {
+                late_punch_out = calculateTimeDiff(finalPunchOut, shiftEnd, 'late_out');
+                early_punch_out = calculateTimeDiff(finalPunchOut, shiftEnd, 'early_out');
             }
         }
-        if (punch_in && punch_out) {
-            total_hours = calculateTotalHours(punch_in, punch_out);
+        if (punch_in && finalPunchOut) {
+            total_hours = calculateTotalHours(punch_in, finalPunchOut);
             completedDays++;
         }
 
-        const syncStatus = (punch_in && !punch_out) ? 'Incomplete' : 'Present';
+        const syncStatus = 'Present';
         const bioId = user.biometric_id || user.emp_id;
 
         const [existing] = await conn.execute(
@@ -198,7 +207,7 @@ async function run() {
                     status = ?, 
                     biometric_id = ? 
                  WHERE id = ?`,
-                [punch_in, punch_out, punch_in, punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, syncStatus, bioId, attn.id]
+                [punch_in, finalPunchOut, punch_in, finalPunchOut, late_punch_in, late_punch_out, early_punch_out, total_hours, syncStatus, bioId, attn.id]
             );
             updated++;
         } else {
@@ -206,7 +215,7 @@ async function run() {
                 `INSERT INTO attendance 
                     (user_id, date, punch_in, punch_out, actual_punch_in, actual_punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, status, biometric_id) 
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [user.id, date, punch_in, punch_out, punch_in, punch_out, late_punch_in, late_punch_out, early_punch_out, total_hours, syncStatus, bioId]
+                [user.id, date, punch_in, finalPunchOut, punch_in, finalPunchOut, late_punch_in, late_punch_out, early_punch_out, total_hours, syncStatus, bioId]
             );
             updated++;
         }
@@ -222,7 +231,7 @@ async function run() {
                     punch_out = VALUES(punch_out), 
                     total_hours = VALUES(total_hours), 
                     status = VALUES(status)`,
-                [bioId, date, user.emp_id, user.employee_name, punch_in, punch_out, activeShiftName || 'General', syncStatus, total_hours, user.id]
+                [bioId, date, user.emp_id, user.employee_name, punch_in, finalPunchOut, activeShiftName || 'General', syncStatus, total_hours, user.id]
             );
         } catch (e) {}
     }
