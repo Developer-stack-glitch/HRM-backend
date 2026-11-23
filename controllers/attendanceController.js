@@ -1202,7 +1202,12 @@ exports.webClockIn = async (req, res) => {
 
         const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '00:00' && p !== '--:--'))].sort();
         const finalPunchIn = uniquePunches[0];
-        const finalPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : (existing.length > 0 ? existing[0].punch_out : null);
+        const punchInMins = getMinutesFromTime(finalPunchIn);
+        const punchOutCandidates = uniquePunches.filter(p => {
+            if (p === finalPunchIn) return false;
+            return (getMinutesFromTime(p) - punchInMins >= 240);
+        });
+        const finalPunchOut = punchOutCandidates.length > 0 ? punchOutCandidates[punchOutCandidates.length - 1] : null;
 
         // Check Shift Roster for override
         const [roster] = await pool.execute(
@@ -1366,7 +1371,7 @@ exports.webClockOut = async (req, res) => {
             late_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'late_out');
         }
 
-        const status = (punch_in && punch_out) ? 'Present' : 'Incomplete';
+        const status = 'Present';
 
         await pool.execute(
             'UPDATE attendance SET punch_in = ?, punch_out = ?, late_punch_in = ?, early_punch_out = ?, late_punch_out = ?, total_hours = ?, status = ?, latitude_out = ?, longitude_out = ?, punch_out_location = ?, is_web_punch = 1 WHERE id = ?',

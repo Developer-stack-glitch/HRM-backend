@@ -40,6 +40,15 @@ const calculateTimeDiff = (time1, time2, type = 'late_in') => {
 };
 
 /**
+ * Helper to get total minutes from HH:mm:ss
+ */
+const getMinutesFromTime = (t) => {
+    if (!t) return 0;
+    const [h, m] = t.split(':').map(Number);
+    return (h || 0) * 60 + (m || 0);
+};
+
+/**
  * Helper to calculate total hours worked
  */
 const calculateTotalHours = (inTime, outTime) => {
@@ -224,14 +233,18 @@ const syncPunchesToAttendance = async (punches, io = null) => {
             if (existing.length > 0) {
                 const attn = existing[0];
                 if (attn.punch_in && attn.punch_in !== '00:00' && attn.punch_in !== '--:--') allPunches.push(attn.punch_in);
-                if (attn.punch_out && attn.punch_out !== '00:00' && attn.punch_out !== '--:--') allPunches.push(attn.punch_out);
-                if (attn.actual_punch_in && attn.actual_punch_in !== '00:00') allPunches.push(attn.actual_punch_in);
-                if (attn.actual_punch_out && attn.actual_punch_out !== '00:00') allPunches.push(attn.actual_punch_out);
+                if (attn.punch_out && attn.punch_out !== '00:00' && attn.punch_out !== '--:--') {
+                    if (date < getISTDate() || attn.punch_out !== attn.punch_in) {
+                        allPunches.push(attn.punch_out);
+                    }
+                }
             }
 
             const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '--:--' && p !== '00:00'))].sort();
-            const punch_in = uniquePunches.length > 0 ? uniquePunches[0] : null;
-            const punch_out = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : null;
+            if (uniquePunches.length === 0) continue;
+
+            // FIRST PUNCH = Punch In (earliest across biometric machine and HRMS web app)
+            const punch_in = uniquePunches[0];
 
             // Shift calculation
             const roster = await ShiftRoster.getRoster(date, date);
@@ -239,25 +252,39 @@ const syncPunchesToAttendance = async (punches, io = null) => {
             const activeShift = rosterEntry ? rosterEntry.shift_name : user.shift;
             const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
 
+            // LAST PUNCH = Punch Out (latest across biometric machine and HRMS web app)
+            // Multiple punches within 4 hours of arrival (e.g. web clock-in right after biometric scan)
+            // are considered additional punch-ins, NOT punch-outs.
+            const punchInMins = getMinutesFromTime(punch_in);
+            const punchOutCandidates = uniquePunches.filter(p => {
+                if (p === punch_in) return false;
+                const pMins = getMinutesFromTime(p);
+                return (pMins - punchInMins >= 240); // At least 4 hours after punch-in
+            });
+
+            let punch_out = null;
+            if (punchOutCandidates.length > 0) {
+                punch_out = punchOutCandidates[punchOutCandidates.length - 1];
+            } else if (date < getISTDate() && shiftEnd) {
+                // Auto-complete single punch on past days
+                punch_out = shiftEnd;
+            }
+
             let late_punch_in = "00:00";
             let late_punch_out = "00:00";
             let early_punch_out = "00:00";
             let total_hours = "00:00";
 
-            if (shiftStart && shiftEnd) {
+            if (shiftStart) {
                 if (punch_in) late_punch_in = calculateTimeDiff(punch_in, shiftStart, 'late_in');
-                if (punch_out) {
-                    late_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'late_out');
-                    early_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'early_out');
-                }
             }
-            let finalPunchOut = punch_out;
-            if (punch_in && !punch_out && date < getISTDate() && shiftEnd) {
-                finalPunchOut = shiftEnd;
+            if (shiftEnd && punch_out) {
+                late_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'late_out');
+                early_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'early_out');
             }
 
-            if (punch_in && finalPunchOut) {
-                total_hours = calculateTotalHours(punch_in, finalPunchOut);
+            if (punch_in && punch_out) {
+                total_hours = calculateTotalHours(punch_in, punch_out);
             }
 
             const syncStatus = 'Present';
@@ -269,9 +296,9 @@ const syncPunchesToAttendance = async (punches, io = null) => {
                     await Attendance.update(attn.id, {
                         ...attn,
                         punch_in: punch_in || attn.punch_in,
-                        punch_out: finalPunchOut || attn.punch_out,
+                        punch_out: punch_out,
                         actual_punch_in: punch_in || attn.actual_punch_in,
-                        actual_punch_out: finalPunchOut || attn.actual_punch_out,
+                        actual_punch_out: punch_out,
                         late_punch_in,
                         late_punch_out,
                         early_punch_out,
@@ -285,9 +312,9 @@ const syncPunchesToAttendance = async (punches, io = null) => {
                     user_id: user.id,
                     date,
                     punch_in,
-                    punch_out: finalPunchOut,
+                    punch_out: punch_out,
                     actual_punch_in: punch_in,
-                    actual_punch_out: finalPunchOut,
+                    actual_punch_out: punch_out,
                     late_punch_in,
                     late_punch_out,
                     early_punch_out,
@@ -360,27 +387,37 @@ exports.handleCDataGet = async (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
     if (options.toLowerCase() === 'all' || req.query.pushver) {
-        // Full ADMS handshake options configuration.
-        // Setting Stamp=0 and ATTLOGStamp=0 instructs the machine to upload all historical punches
+        // Full ADMS handshake options configuration
+        const now = new Date();
+        const istStr = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Kolkata',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }).format(now).replace(/,/g, '');
+
         const configResponse = [
             `GET OPTION FROM: ${sn}`,
-            `Stamp=0`,
-            `OpStamp=0`,
+            `Stamp=9999`,
+            `OpStamp=9999`,
             `PhotoStamp=0`,
-            `ATTLOGStamp=0`,
             `ErrorDelay=30`,
             `Delay=10`,
             `TransTimes=00:00;14:05`,
             `TransInterval=1`,
             `TransFlag=1111000000`,
-            `TimeZone=5.5`,
+            `DateTime=${istStr}`,
             `Realtime=1`,
             `SyncTime=1`,
             `ServerVer=3.4.1`,
             ``
         ].join('\r\n');
 
-        console.log(`[ADMS] Handshake options sent to device SN: ${sn} (Stamp=0 for full sync)`);
+        console.log(`[ADMS] Handshake options sent to device SN: ${sn} (IST DateTime=${istStr})`);
         return res.status(200).send(configResponse);
     }
 
@@ -452,13 +489,23 @@ exports.handleGetRequest = async (req, res) => {
     const sn = req.query.SN || req.query.sn || 'UNKNOWN';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
-    // Trigger full upload of historical ATTLOG once per device reboot/session
+    // Periodically sync device hardware clock with exact IST DateTime
     const lastCmdTime = syncedDevices.get(sn) || 0;
     const now = Date.now();
-    if (now - lastCmdTime > 10 * 60 * 1000) { // Send query command once every 10 mins if needed
+    if (now - lastCmdTime > 15 * 60 * 1000) { // Sync device clock every 15 minutes
         syncedDevices.set(sn, now);
-        console.log(`[ADMS] Ordering device ${sn} to push all historical attendance logs (DATA QUERY ATTLOG)...`);
-        return res.status(200).send(`C:101:DATA QUERY ATTLOG\r\nC:102:CHECK`);
+        const istStr = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Kolkata',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }).format(new Date()).replace(/,/g, '');
+        console.log(`[ADMS] Syncing device ${sn} clock to IST (${istStr})...`);
+        return res.status(200).send(`C:201:SET OPTIONS DateTime=${istStr}\r\nC:202:CHECK`);
     }
 
     return res.status(200).send('OK');
