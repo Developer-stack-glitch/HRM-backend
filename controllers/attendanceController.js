@@ -514,8 +514,8 @@ const getAttendanceDataInternal = async (startDate, endDate, userId = null, user
     const userMap = {};
     const userByIdMap = {};
     users.forEach(u => {
-        const fetchId = u.biometric_id || u.emp_id;
-        if (fetchId) userMap[String(fetchId).trim()] = u;
+        if (u.biometric_id) userMap[String(u.biometric_id).trim()] = u;
+        if (u.emp_id) userMap[String(u.emp_id).trim()] = u;
         userByIdMap[String(u.id)] = u;
     });
 
@@ -767,37 +767,42 @@ const fetchBiometricLogsInternal = async (fromDate, toDate, forceRefresh = false
             const fDate = `${fDateStr} 00:00`;
             const tDate = `${tDateStr} 23:59`;
 
-            // 1. Check local biometric_punches table (populated directly by ADMS push when machine is on)
-            let admsPunches = [];
+            const allLogsMap = new Map();
+
+            // 1. Load local biometric_punches table (populated directly by ADMS push + previously saved SOAP punches)
             try {
                 const BiometricPunch = require('../models/biometricPunchModel');
-                admsPunches = await BiometricPunch.getByDateRange(fDateStr, tDateStr);
+                const localPunches = await BiometricPunch.getByDateRange(fDateStr, tDateStr);
+                if (localPunches && localPunches.length > 0) {
+                    for (const p of localPunches) {
+                        const dateNorm = normalizeDate(p.date);
+                        const empIdClean = String(p.emp_id).trim();
+                        const key = `${empIdClean}_${dateNorm}_${p.time}`;
+                        allLogsMap.set(key, {
+                            emp_id: empIdClean,
+                            date: dateNorm,
+                            time: p.time,
+                            timestamp: p.timestamp || `${dateNorm} ${p.time}`,
+                            device_name: p.device_name || 'Biometric Device'
+                        });
+                    }
+                }
             } catch (admsErr) {
                 console.warn('[Biometric] Local biometric_punches query notice:', admsErr.message);
             }
 
-            if (admsPunches && admsPunches.length > 0) {
-                const mappedLogs = admsPunches.map(p => ({
-                    emp_id: p.emp_id,
-                    date: p.date,
-                    time: p.time,
-                    timestamp: p.timestamp,
-                    device_name: p.device_name || 'Biometric Device'
-                }));
-                biometricCache.set(cacheKey, {
-                    timestamp: Date.now(),
-                    data: mappedLogs,
-                    inFlightPromise: null
-                });
-                return mappedLogs;
-            }
-
-            // 2. Fallback to SOAP API (if legacy eSSL desktop service is configured and reachable)
+            // 2. Query SOAP API for all registered physical devices in parallel
             const biometricApiUrl = process.env.BIOMETRIC_API_URL || 'http://210.18.138.85:80/iclock/webapiservice.asmx?op=GetTransactionsLog';
             const biometricUser = process.env.BIOMETRIC_API_USER || 'API';
             const biometricPassword = process.env.BIOMETRIC_API_PASSWORD || 'Essl@123';
 
-            const logPromises = devices.map(async (device) => {
+            const activeDevices = devices.filter(d => 
+                d.serial_number && 
+                d.serial_number !== 'UNKNOWN' && 
+                !d.serial_number.startsWith('TEST')
+            );
+
+            const logPromises = activeDevices.map(async (device) => {
                 try {
                     const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -833,17 +838,39 @@ const fetchBiometricLogsInternal = async (fromDate, toDate, forceRefresh = false
                     if (!rawData || typeof rawData !== 'string') return [];
 
                     const lines = rawData.trim().split('\n');
-                    return lines.map(line => {
+                    const parsed = [];
+                    lines.forEach(line => {
                         const parts = line.split('\t').map(p => p.trim()).filter(Boolean);
-                        if (parts.length < 2) return null;
+                        if (parts.length < 2) return;
                         const empId = parts[0];
                         const timestamp = parts[1];
-                        if (!timestamp) return null;
+                        if (!timestamp || timestamp === '123') return;
                         const [dateRaw, time] = timestamp.split(' ');
-                        if (!dateRaw) return null;
+                        if (!dateRaw || !time) return;
                         const date = normalizeDate(dateRaw);
-                        return { emp_id: empId, date, time, timestamp, device_name: device.name };
-                    }).filter(Boolean);
+                        const empIdClean = String(empId).trim();
+                        const key = `${empIdClean}_${date}_${time}`;
+
+                        parsed.push({
+                            emp_id: empIdClean,
+                            date,
+                            time,
+                            timestamp: `${date} ${time}`,
+                            device_name: device.name,
+                            device_sn: device.serial_number
+                        });
+
+                        if (!allLogsMap.has(key)) {
+                            allLogsMap.set(key, {
+                                emp_id: empIdClean,
+                                date,
+                                time,
+                                timestamp: `${date} ${time}`,
+                                device_name: device.name
+                            });
+                        }
+                    });
+                    return parsed;
                 } catch (err) {
                     console.error(`Error fetching logs for device ${device.name} (${device.serial_number}):`, err.message);
                     return [];
@@ -851,13 +878,40 @@ const fetchBiometricLogsInternal = async (fromDate, toDate, forceRefresh = false
             });
 
             const results = await Promise.all(logPromises);
-            const flat = results.flat();
+            const flatNewLogs = results.flat();
+
+            // 3. Persist new SOAP punches into biometric_punches table
+            if (flatNewLogs.length > 0) {
+                try {
+                    const BiometricPunch = require('../models/biometricPunchModel');
+                    const punchRows = flatNewLogs.map(l => ({
+                        device_sn: l.device_sn,
+                        device_name: l.device_name,
+                        emp_id: l.emp_id,
+                        punch_time: l.timestamp,
+                        date: l.date,
+                        time: l.time,
+                        verify_type: 1,
+                        punch_state: 0
+                    }));
+                    await BiometricPunch.createBulk(punchRows);
+                } catch (saveErr) {
+                    console.warn('[Biometric] Auto-save SOAP punches notice:', saveErr.message);
+                }
+            }
+
+            const mergedList = Array.from(allLogsMap.values()).sort((a, b) => {
+                const tsA = a.timestamp || `${a.date} ${a.time}`;
+                const tsB = b.timestamp || `${b.date} ${b.time}`;
+                return tsA.localeCompare(tsB);
+            });
+
             biometricCache.set(cacheKey, {
                 timestamp: Date.now(),
-                data: flat,
+                data: mergedList,
                 inFlightPromise: null
             });
-            return flat;
+            return mergedList;
         } catch (error) {
             console.error('Error fetching biometric logs:', error.message);
             const stale = biometricCache.get(cacheKey);
@@ -1856,175 +1910,181 @@ exports.deleteAttendance = async (req, res) => {
     }
 };
 
-exports.syncBiometricLogs = async (req, res) => {
-    try {
-        const { fromDate, toDate } = req.body;
-        clearBiometricCache();
-        const logs = await fetchBiometricLogsInternal(fromDate, toDate, true);
+const syncBiometricAttendanceInternal = async (fromDate, toDate) => {
+    const fDate = fromDate || getISTDate();
+    const tDate = toDate || getISTDate();
+    clearBiometricCache();
+    const logs = await fetchBiometricLogsInternal(fDate, tDate, true);
 
-        if (logs.length === 0) {
-            return res.json({ message: 'No logs found to sync', count: 0 });
+    if (!logs || logs.length === 0) {
+        return { message: 'No logs found to sync', count: 0, savedCount: 0, skippedCount: 0 };
+    }
+
+    // Fetch roster for the range
+    const roster = await ShiftRoster.getRoster(fDate, tDate);
+    const rosterMap = {};
+    roster.forEach(r => {
+        const dateStr = formatDate(r.roster_date);
+        rosterMap[`${r.user_id}_${dateStr}`] = r;
+    });
+
+    // Store summarized logs for history
+    const summarizedLogs = await processBiometricLogs(logs);
+    if (summarizedLogs.length > 0) {
+        await BiometricLog.createBulk(summarizedLogs);
+    }
+
+    const users = await User.getAll();
+    const userMap = {};
+    const userByIdMap = {};
+    users.forEach(u => {
+        userByIdMap[u.id] = u;
+        if (u.biometric_id) userMap[String(u.biometric_id).trim()] = u;
+        if (u.emp_id) userMap[String(u.emp_id).trim()] = u;
+    });
+
+    // Group matched logs
+    const matchedGroups = {};
+    logs.forEach(log => {
+        const user = userMap[String(log.emp_id).trim()];
+        if (!user) return;
+
+        const dateStr = normalizeDate(log.date);
+        const key = `${user.id}_${dateStr}`;
+
+        if (!matchedGroups[key]) {
+            matchedGroups[key] = {
+                user_id: user.id,
+                date: dateStr,
+                punches: [],
+                shift: user.shift
+            };
         }
+        matchedGroups[key].punches.push(log.time);
+    });
 
-        // Fetch roster for the range
-        const roster = await ShiftRoster.getRoster(fromDate, toDate);
-        const rosterMap = {};
-        roster.forEach(r => {
-            const dateStr = formatDate(r.roster_date);
-            rosterMap[`${r.user_id}_${dateStr}`] = r;
-        });
+    let savedCount = 0;
+    let skippedCount = 0;
 
-        // Store summarized logs for history
-        const summarizedLogs = await processBiometricLogs(logs);
-        if (summarizedLogs.length > 0) {
-            await BiometricLog.createBulk(summarizedLogs);
-        }
+    for (const key of Object.keys(matchedGroups)) {
+        const group = matchedGroups[key];
+        const { user_id, date, punches, shift } = group;
 
-        const users = await User.getAll();
-        const userMap = {};
-        const userByIdMap = {};
-        users.forEach(u => {
-            userByIdMap[u.id] = u;
-            const fetchId = u.biometric_id || u.emp_id;
-            if (fetchId) userMap[String(fetchId).trim()] = u;
-        });
+        // Check if already exists in DB
+        const [existing] = await pool.execute(
+            'SELECT * FROM attendance WHERE user_id = ? AND date = ?',
+            [user_id, date]
+        );
 
-        // Group matched logs
-        const matchedGroups = {};
-        logs.forEach(log => {
-            const user = userMap[String(log.emp_id).trim()];
-            if (!user) return;
+        if (existing.length > 0) {
+            const attn = existing[0];
 
-            const dateStr = normalizeDate(log.date);
-            const key = `${user.id}_${dateStr}`;
-
-            if (!matchedGroups[key]) {
-                matchedGroups[key] = {
-                    user_id: user.id,
-                    date: dateStr,
-                    punches: [],
-                    shift: user.shift
-                };
-            }
-            matchedGroups[key].punches.push(log.time);
-        });
-
-        let savedCount = 0;
-        let skippedCount = 0;
-
-        for (const key of Object.keys(matchedGroups)) {
-            const group = matchedGroups[key];
-            const { user_id, date, punches, shift } = group;
-
-            // Check if already exists in DB
-            const [existing] = await pool.execute(
-                'SELECT * FROM attendance WHERE user_id = ? AND date = ?',
-                [user_id, date]
-            );
-
-            if (existing.length > 0) {
-                const attn = existing[0];
-
-                // If record was manually modified by an Admin, preserve the manual edit and do not overwrite
-                if (Number(attn.is_edited) === 1 || attn.is_edited === true) {
-                    skippedCount++;
-                    continue;
-                }
-
-                const allPunches = [...punches];
-                if (attn.punch_in && attn.punch_in !== '00:00') allPunches.push(attn.punch_in);
-                if (attn.punch_out && attn.punch_out !== '00:00') allPunches.push(attn.punch_out);
-
-                const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '--:--'))].sort();
-                const newPunchIn = uniquePunches.length > 0 ? uniquePunches[0] : attn.punch_in;
-                const newPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : attn.punch_out;
-
-                if (newPunchIn !== attn.punch_in || newPunchOut !== attn.punch_out) {
-                    const rosterEntry = rosterMap[`${user_id}_${date}`];
-                    const activeShift = rosterEntry ? rosterEntry.shift_name : shift;
-                    const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
-                    let late_punch_in = "00:00";
-                    let late_punch_out = "00:00";
-                    let early_punch_out = "00:00";
-                    let total_hours = "00:00";
-
-                    if (shiftStart && shiftEnd) {
-                        if (newPunchIn) late_punch_in = calculateTimeDiff(newPunchIn, shiftStart, 'late_in');
-                        if (newPunchOut) {
-                            late_punch_out = calculateTimeDiff(newPunchOut, shiftEnd, 'late_out');
-                            early_punch_out = calculateTimeDiff(newPunchOut, shiftEnd, 'early_out');
-                        }
-                    }
-                    if (newPunchIn && newPunchOut) total_hours = calculateTotalHours(newPunchIn, newPunchOut);
-
-                    const syncStatus = (newPunchIn && !newPunchOut) ? 'Incomplete' : 'Present';
-
-                    await Attendance.update(attn.id, {
-                        ...attn,
-                        punch_in: newPunchIn,
-                        punch_out: newPunchOut,
-                        late_punch_in,
-                        late_punch_out,
-                        early_punch_out,
-                        total_hours,
-                        status: syncStatus
-                    });
-
-                    savedCount++;
-                } else {
-                    skippedCount++;
-                }
+            // If record was manually modified by an Admin, preserve the manual edit and do not overwrite
+            if (Number(attn.is_edited) === 1 || attn.is_edited === true) {
+                skippedCount++;
                 continue;
             }
 
+            const allPunches = [...punches];
+            if (attn.punch_in && attn.punch_in !== '00:00') allPunches.push(attn.punch_in);
+            if (attn.punch_out && attn.punch_out !== '00:00') allPunches.push(attn.punch_out);
 
-            punches.sort();
-            const punch_in = punches[0];
-            const punch_out = punches.length > 1 ? punches[punches.length - 1] : null;
+            const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '--:--'))].sort();
+            const newPunchIn = uniquePunches.length > 0 ? uniquePunches[0] : attn.punch_in;
+            const newPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : attn.punch_out;
 
-            const rosterEntry = rosterMap[`${user_id}_${date}`];
-            const activeShift = rosterEntry ? rosterEntry.shift_name : shift;
-            const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
+            if (newPunchIn !== attn.punch_in || newPunchOut !== attn.punch_out) {
+                const rosterEntry = rosterMap[`${user_id}_${date}`];
+                const activeShift = rosterEntry ? rosterEntry.shift_name : shift;
+                const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
+                let late_punch_in = "00:00";
+                let late_punch_out = "00:00";
+                let early_punch_out = "00:00";
+                let total_hours = "00:00";
 
-            let late_punch_in = "00:00";
-            let late_punch_out = "00:00";
-            let early_punch_out = "00:00";
-            let total_hours = "00:00";
-
-            if (shiftStart && shiftEnd) {
-                if (punch_in) late_punch_in = calculateTimeDiff(punch_in, shiftStart, 'late_in');
-                if (punch_out) {
-                    late_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'late_out');
-                    early_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'early_out');
+                if (shiftStart && shiftEnd) {
+                    if (newPunchIn) late_punch_in = calculateTimeDiff(newPunchIn, shiftStart, 'late_in');
+                    if (newPunchOut) {
+                        late_punch_out = calculateTimeDiff(newPunchOut, shiftEnd, 'late_out');
+                        early_punch_out = calculateTimeDiff(newPunchOut, shiftEnd, 'early_out');
+                    }
                 }
+                if (newPunchIn && newPunchOut) total_hours = calculateTotalHours(newPunchIn, newPunchOut);
+
+                const syncStatus = (newPunchIn && !newPunchOut) ? 'Incomplete' : 'Present';
+
+                await Attendance.update(attn.id, {
+                    ...attn,
+                    punch_in: newPunchIn,
+                    punch_out: newPunchOut,
+                    late_punch_in,
+                    late_punch_out,
+                    early_punch_out,
+                    total_hours,
+                    status: syncStatus
+                });
+
+                savedCount++;
+            } else {
+                skippedCount++;
             }
-            if (punch_in && punch_out) total_hours = calculateTotalHours(punch_in, punch_out);
-
-            const userBioId = userByIdMap[user_id] ? (userByIdMap[user_id].biometric_id || userByIdMap[user_id].emp_id) : null;
-
-            // If only punch_in exists (no punch_out), store as Incomplete
-            const syncStatus = (punch_in && !punch_out) ? 'Incomplete' : 'Present';
-
-            await Attendance.create({
-                user_id,
-                date,
-                punch_in,
-                punch_out,
-                late_punch_in,
-                late_punch_out,
-                early_punch_out,
-                total_hours,
-                status: syncStatus,
-                biometric_id: userBioId
-            });
-            savedCount++;
+            continue;
         }
 
-        res.json({
-            message: `Sync completed: Saved ${savedCount} records, skipped ${skippedCount} existing.`,
-            savedCount,
-            skippedCount
+        punches.sort();
+        const punch_in = punches[0];
+        const punch_out = punches.length > 1 ? punches[punches.length - 1] : null;
+
+        const rosterEntry = rosterMap[`${user_id}_${date}`];
+        const activeShift = rosterEntry ? rosterEntry.shift_name : shift;
+        const { start: shiftStart, end: shiftEnd } = await getShiftTimes(activeShift);
+
+        let late_punch_in = "00:00";
+        let late_punch_out = "00:00";
+        let early_punch_out = "00:00";
+        let total_hours = "00:00";
+
+        if (shiftStart && shiftEnd) {
+            if (punch_in) late_punch_in = calculateTimeDiff(punch_in, shiftStart, 'late_in');
+            if (punch_out) {
+                late_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'late_out');
+                early_punch_out = calculateTimeDiff(punch_out, shiftEnd, 'early_out');
+            }
+        }
+        if (punch_in && punch_out) total_hours = calculateTotalHours(punch_in, punch_out);
+
+        const userBioId = userByIdMap[user_id] ? (userByIdMap[user_id].biometric_id || userByIdMap[user_id].emp_id) : null;
+
+        // If only punch_in exists (no punch_out), store as Incomplete
+        const syncStatus = (punch_in && !punch_out) ? 'Incomplete' : 'Present';
+
+        await Attendance.create({
+            user_id,
+            date,
+            punch_in,
+            punch_out,
+            late_punch_in,
+            late_punch_out,
+            early_punch_out,
+            total_hours,
+            status: syncStatus,
+            biometric_id: userBioId
         });
+        savedCount++;
+    }
+
+    return {
+        message: `Sync completed: Saved ${savedCount} records, skipped ${skippedCount} existing.`,
+        savedCount,
+        skippedCount
+    };
+};
+
+exports.syncBiometricLogs = async (req, res) => {
+    try {
+        const { fromDate, toDate } = req.body;
+        const result = await syncBiometricAttendanceInternal(fromDate, toDate);
+        res.json(result);
     } catch (error) {
         console.error('Sync error:', error);
         res.status(500).json({ message: 'Sync failed', error: error.message });
@@ -2628,5 +2688,8 @@ module.exports = {
     enrichAttendanceRecord,
     isWeekOff,
     formatDate,
-    getShiftTimes
+    getShiftTimes,
+    fetchBiometricLogsInternal,
+    syncBiometricAttendanceInternal,
+    getISTDate
 };

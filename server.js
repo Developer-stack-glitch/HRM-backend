@@ -158,6 +158,26 @@ pool.getConnection()
         BiometricPunch.ensureTable().catch(err => {
             console.warn('[BiometricPunch] Ensure table notice:', err.message);
         });
+
+        // Initialize background sync for all biometric devices (runs every 5 minutes)
+        try {
+            const { syncBiometricAttendanceInternal } = require('./controllers/attendanceController');
+            // Initial sync on startup (after 10s delay to allow full initialization)
+            setTimeout(() => {
+                syncBiometricAttendanceInternal()
+                    .then(res => console.log('[BiometricAutoSync] Initial sync completed:', res.message))
+                    .catch(e => console.warn('[BiometricAutoSync] Startup sync warning:', e.message));
+            }, 10000);
+
+            // Recurring sync every 5 minutes
+            setInterval(() => {
+                syncBiometricAttendanceInternal()
+                    .then(res => console.log('[BiometricAutoSync] Scheduled sync completed:', res.message))
+                    .catch(e => console.warn('[BiometricAutoSync] Scheduled sync warning:', e.message));
+            }, 5 * 60 * 1000);
+        } catch (syncErr) {
+            console.warn('[BiometricAutoSync] Init warning:', syncErr.message);
+        }
     })
     .catch(err => {
         console.error('Database connection failed:', err.message);
