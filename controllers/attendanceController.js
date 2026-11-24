@@ -1986,12 +1986,14 @@ const syncBiometricAttendanceInternal = async (fromDate, toDate) => {
             }
 
             const allPunches = [...punches];
-            if (attn.punch_in && attn.punch_in !== '00:00') allPunches.push(attn.punch_in);
-            if (attn.punch_out && attn.punch_out !== '00:00') allPunches.push(attn.punch_out);
+            if (Number(attn.is_web_punch) === 1 || attn.is_web_punch === true) {
+                if (attn.punch_in && attn.punch_in !== '00:00') allPunches.push(attn.punch_in);
+                if (attn.punch_out && attn.punch_out !== '00:00') allPunches.push(attn.punch_out);
+            }
 
             const uniquePunches = [...new Set(allPunches.filter(p => p && p !== '--:--'))].sort();
             const newPunchIn = uniquePunches.length > 0 ? uniquePunches[0] : attn.punch_in;
-            const newPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : attn.punch_out;
+            const newPunchOut = uniquePunches.length > 1 ? uniquePunches[uniquePunches.length - 1] : null;
 
             if (newPunchIn !== attn.punch_in || newPunchOut !== attn.punch_out) {
                 const rosterEntry = rosterMap[`${user_id}_${date}`];

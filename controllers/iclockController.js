@@ -6,6 +6,34 @@ const { User } = require('../models/userModel');
 const ShiftRoster = require('../models/shiftRosterModel');
 
 /**
+ * Helper to get current date in IST (YYYY-MM-DD)
+ */
+const getISTDate = () => {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(new Date());
+};
+
+/**
+ * Helper to get current datetime string in IST (YYYY-MM-DD HH:mm:ss)
+ */
+const getISTDateTimeStr = () => {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    }).format(new Date()).replace(/,/g, '');
+};
+
+/**
  * Helper to calculate time difference for late in, early out, late out
  */
 const calculateTimeDiff = (time1, time2, type = 'late_in') => {
@@ -113,7 +141,7 @@ const getOrCreateDevice = async (sn) => {
 /**
  * Parse raw text payload sent by eSSL / ZKTeco biometric devices
  */
-const parseAttlogPayload = (rawBody) => {
+const parseAttlogPayload = (rawBody, sn = 'UNKNOWN') => {
     if (!rawBody || typeof rawBody !== 'string') return [];
 
     const lines = rawBody.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -172,8 +200,47 @@ const parseAttlogPayload = (rawBody) => {
             // Normalize datetime
             const dtParts = punchTime.split(' ');
             if (dtParts.length >= 2) {
-                const date = dtParts[0].trim();
-                const time = dtParts[1].trim();
+                let date = dtParts[0].trim();
+                let time = dtParts[1].trim();
+
+                // Calibrate if the punch is arriving in real-time but the device hardware clock is lagging by 30 mins
+                // (e.g. device firmware timezone set to GMT+5.0 instead of GMT+5.5)
+                try {
+                    const todayIST = getISTDate();
+                    const nowISTParts = getISTDateTimeStr().split(' ');
+                    const curTimeIST = nowISTParts[1];
+
+                    // Check if date is today and timestamp is 25-35 minutes behind real time IST
+                    if (date === todayIST && curTimeIST) {
+                        const [pH, pM, pS] = time.split(':').map(Number);
+                        const [cH, cM, cS] = curTimeIST.split(':').map(Number);
+                        const pSecs = pH * 3600 + pM * 60 + (pS || 0);
+                        const cSecs = cH * 3600 + cM * 60 + (cS || 0);
+                        const diffSecs = cSecs - pSecs;
+
+                        if (diffSecs >= 25 * 60 && diffSecs <= 35 * 60) {
+                            const calibMs = new Date(`${date}T${time}+05:30`).getTime() + 30 * 60 * 1000;
+                            const calibDateObj = new Date(calibMs);
+                            const calibParts = new Intl.DateTimeFormat('en-CA', {
+                                timeZone: 'Asia/Kolkata',
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                                hour12: false
+                            }).format(calibDateObj).replace(/,/g, '').split(' ');
+                            console.log(`[ADMS] Auto-calibrated punch for emp ${empId} (SN: ${sn}) from ${date} ${time} to ${calibParts[0]} ${calibParts[1]} (IST +30m clock drift correction)`);
+                            date = calibParts[0];
+                            time = calibParts[1];
+                            punchTime = `${date} ${time}`;
+                        }
+                    }
+                } catch (calibErr) {
+                    console.warn('[ADMS] Auto-calibration check notice:', calibErr.message);
+                }
+
                 punches.push({
                     emp_id: empId,
                     punch_time: punchTime,
@@ -232,10 +299,12 @@ const syncPunchesToAttendance = async (punches, io = null) => {
             const allPunches = [...userPunches.map(p => p.time)];
             if (existing.length > 0) {
                 const attn = existing[0];
-                if (attn.punch_in && attn.punch_in !== '00:00' && attn.punch_in !== '--:--') allPunches.push(attn.punch_in);
-                if (attn.punch_out && attn.punch_out !== '00:00' && attn.punch_out !== '--:--') {
-                    if (date < getISTDate() || attn.punch_out !== attn.punch_in) {
-                        allPunches.push(attn.punch_out);
+                if (attn.is_web_punch === 1 || attn.is_web_punch === true) {
+                    if (attn.punch_in && attn.punch_in !== '00:00' && attn.punch_in !== '--:--') allPunches.push(attn.punch_in);
+                    if (attn.punch_out && attn.punch_out !== '00:00' && attn.punch_out !== '--:--') {
+                        if (date < getISTDate() || attn.punch_out !== attn.punch_in) {
+                            allPunches.push(attn.punch_out);
+                        }
                     }
                 }
             }
@@ -388,17 +457,7 @@ exports.handleCDataGet = async (req, res) => {
 
     if (options.toLowerCase() === 'all' || req.query.pushver) {
         // Full ADMS handshake options configuration
-        const now = new Date();
-        const istStr = new Intl.DateTimeFormat('en-CA', {
-            timeZone: 'Asia/Kolkata',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false
-        }).format(now).replace(/,/g, '');
+        const istStr = getISTDateTimeStr();
 
         const configResponse = [
             `GET OPTION FROM: ${sn}`,
@@ -410,6 +469,8 @@ exports.handleCDataGet = async (req, res) => {
             `TransTimes=00:00;14:05`,
             `TransInterval=1`,
             `TransFlag=1111000000`,
+            `TimeZone=5.5`,
+            `ServerTZ=5.5`,
             `DateTime=${istStr}`,
             `Realtime=1`,
             `SyncTime=1`,
@@ -417,7 +478,7 @@ exports.handleCDataGet = async (req, res) => {
             ``
         ].join('\r\n');
 
-        console.log(`[ADMS] Handshake options sent to device SN: ${sn} (IST DateTime=${istStr})`);
+        console.log(`[ADMS] Handshake options sent to device SN: ${sn} (IST DateTime=${istStr}, TimeZone=5.5)`);
         return res.status(200).send(configResponse);
     }
 
@@ -450,7 +511,7 @@ exports.handleCDataPost = async (req, res) => {
         rawBody = JSON.stringify(rawBody);
     }
 
-    const punches = parseAttlogPayload(rawBody);
+    const punches = parseAttlogPayload(rawBody, sn);
 
     if (punches.length === 0) {
         return res.status(200).send('OK');
@@ -494,18 +555,12 @@ exports.handleGetRequest = async (req, res) => {
     const now = Date.now();
     if (now - lastCmdTime > 15 * 60 * 1000) { // Sync device clock every 15 minutes
         syncedDevices.set(sn, now);
-        const istStr = new Intl.DateTimeFormat('en-CA', {
-            timeZone: 'Asia/Kolkata',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false
-        }).format(new Date()).replace(/,/g, '');
-        console.log(`[ADMS] Syncing device ${sn} clock to IST (${istStr})...`);
-        return res.status(200).send(`C:201:SET OPTIONS DateTime=${istStr}\r\nC:202:CHECK`);
+        const istStr = getISTDateTimeStr();
+        const cmdId1 = Math.floor(now / 1000);
+        const cmdId2 = cmdId1 + 1;
+        const cmdId3 = cmdId1 + 2;
+        console.log(`[ADMS] Syncing device ${sn} clock to IST (${istStr}) with CmdIDs ${cmdId1}, ${cmdId2}, ${cmdId3}...`);
+        return res.status(200).send(`C:${cmdId1}:SET OPTIONS DateTime=${istStr}\r\nC:${cmdId2}:SET OPTIONS TimeZone=5.5\r\nC:${cmdId3}:CHECK`);
     }
 
     return res.status(200).send('OK');
@@ -516,6 +571,7 @@ exports.handleGetRequest = async (req, res) => {
  * Callback endpoint when device executes a command
  */
 exports.handleDeviceCmd = async (req, res) => {
+    console.log('[ADMS] Device command result received:', req.query, req.body);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.status(200).send('OK');
 };
