@@ -375,11 +375,10 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
                             status = 'Week Off';
                             working_day_value = 1.0;
                         } else {
-                            status = 'Present';
+                            status = 'Incomplete';
                             working_day_value = (leaveDetail && leaveDetail.is_half_day) ? 0.5 : 1.0;
                             if (!punch_out && shiftEnd) {
-                                punch_out = shiftEnd;
-                                total_hours = calculateTotalHours(punch_in, punch_out);
+                                total_hours = calculateTotalHours(punch_in, shiftEnd);
                             }
                         }
                     }
@@ -388,9 +387,9 @@ const enrichAttendanceRecord = async (record, shift, allLeaves = [], holidays = 
                 }
             }
 
-            if (status === 'Present') {
+            if (status === 'Present' || status === 'Incomplete') {
                 // Permissions waive penalties but the time is still deducted from working value
-                working_day_value = Math.max(0, 1.0 - totalPenalty - permissionDeduction);
+                working_day_value = Math.max(0, (leaveDetail && leaveDetail.is_half_day ? 0.5 : 1.0) - totalPenalty - permissionDeduction);
                 if (totalPenalty > 0 || permissionDeduction > 0) {
                     console.log(`[Deduction] User: ${user_id}, Date: ${recordDateStr}, Penalty: ${totalPenalty}, PermDed: ${permissionDeduction}, Final WDV: ${working_day_value}`);
                 }
@@ -796,9 +795,9 @@ const fetchBiometricLogsInternal = async (fromDate, toDate, forceRefresh = false
             const biometricUser = process.env.BIOMETRIC_API_USER || 'API';
             const biometricPassword = process.env.BIOMETRIC_API_PASSWORD || 'Essl@123';
 
-            const activeDevices = devices.filter(d => 
-                d.serial_number && 
-                d.serial_number !== 'UNKNOWN' && 
+            const activeDevices = devices.filter(d =>
+                d.serial_number &&
+                d.serial_number !== 'UNKNOWN' &&
                 !d.serial_number.startsWith('TEST')
             );
 
