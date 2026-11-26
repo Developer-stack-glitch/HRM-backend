@@ -187,6 +187,7 @@ const setupTenantDatabase = async (dbName, dbUser, dbPass, companyData) => {
                 name VARCHAR(255) NOT NULL,
                 serial_number VARCHAR(255) NOT NULL UNIQUE,
                 location VARCHAR(255),
+                clock_offset_minutes INT NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )

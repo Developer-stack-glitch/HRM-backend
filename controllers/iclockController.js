@@ -2,35 +2,51 @@ const { pool } = require('../Config/dbConfig');
 const BiometricPunch = require('../models/biometricPunchModel');
 const BiometricLog = require('../models/biometricLogModel');
 const Attendance = require('../models/attendanceModel');
+const Device = require('../models/deviceModel');
 const { User } = require('../models/userModel');
 const ShiftRoster = require('../models/shiftRosterModel');
+
+const istDateFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+});
+
+const istDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+});
 
 /**
  * Helper to get current date in IST (YYYY-MM-DD)
  */
-const getISTDate = () => {
-    return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-    }).format(new Date());
+const getISTDate = (dateObj = new Date()) => {
+    return istDateFormatter.format(dateObj);
 };
 
 /**
  * Helper to get current datetime string in IST (YYYY-MM-DD HH:mm:ss)
  */
-const getISTDateTimeStr = () => {
-    return new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Kolkata',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    }).format(new Date()).replace(/,/g, '');
+const getISTDateTimeStr = (dateObj = new Date()) => {
+    return istDateTimeFormatter.format(dateObj).replace(/,/g, '');
+};
+
+/**
+ * Shift an IST date/time pair by offsetMinutes and return normalized parts.
+ */
+const shiftISTDateTime = (date, time, offsetMinutes) => {
+    const baseMs = new Date(`${date}T${time}+05:30`).getTime();
+    if (Number.isNaN(baseMs)) return { date, time, punchTime: `${date} ${time}` };
+    const shifted = new Date(baseMs + offsetMinutes * 60 * 1000);
+    const [newDate, newTime] = getISTDateTimeStr(shifted).split(' ');
+    return { date: newDate, time: newTime, punchTime: `${newDate} ${newTime}` };
 };
 
 /**
@@ -119,8 +135,9 @@ const getShiftTimes = async (shiftInput) => {
  * Helper to auto-register or fetch device by Serial Number
  */
 const getOrCreateDevice = async (sn) => {
-    if (!sn) return { id: null, name: 'Unknown Device', serial_number: 'UNKNOWN' };
+    if (!sn) return { id: null, name: 'Unknown Device', serial_number: 'UNKNOWN', clock_offset_minutes: 0 };
     try {
+        await Device.ensureClockOffsetColumn();
         const [rows] = await pool.execute('SELECT * FROM devices WHERE serial_number = ?', [sn]);
         if (rows.length > 0) {
             return rows[0];
@@ -131,21 +148,28 @@ const getOrCreateDevice = async (sn) => {
             'INSERT INTO devices (name, serial_number, location) VALUES (?, ?, ?)',
             [deviceName, sn, 'Auto-registered (ADMS)']
         );
-        return { id: result.insertId, name: deviceName, serial_number: sn };
+        return { id: result.insertId, name: deviceName, serial_number: sn, clock_offset_minutes: 0 };
     } catch (err) {
         console.warn('[ADMS] Error resolving device:', err.message);
-        return { id: null, name: `Biometric-${sn}`, serial_number: sn };
+        return { id: null, name: `Biometric-${sn}`, serial_number: sn, clock_offset_minutes: 0 };
     }
 };
 
 /**
- * Parse raw text payload sent by eSSL / ZKTeco biometric devices
+ * Parse and calibrate raw text payload sent by eSSL / ZKTeco biometric devices.
+ *
+ * When a device has a known hardware clock offset (e.g. +30 min for GMT+5.0
+ * devices reporting 30 mins behind IST), all punches in real-time AND delayed
+ * or overnight batch uploads are shifted unless doing so would move punches
+ * into the future (which indicates the device hardware clock was synced to IST).
  */
-const parseAttlogPayload = (rawBody, sn = 'UNKNOWN') => {
-    if (!rawBody || typeof rawBody !== 'string') return [];
+const parseAndCalibrateAttlog = (rawBody, sn = 'UNKNOWN', clockOffsetMinutes = 0, nowMs = Date.now()) => {
+    if (!rawBody || typeof rawBody !== 'string') {
+        return { punches: [], shouldResetOffset: false };
+    }
 
     const lines = rawBody.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const punches = [];
+    const parsedEntries = [];
 
     for (const line of lines) {
         // Skip header lines
@@ -197,64 +221,88 @@ const parseAttlogPayload = (rawBody, sn = 'UNKNOWN') => {
         }
 
         if (empId && punchTime) {
-            // Normalize datetime
             const dtParts = punchTime.split(' ');
             if (dtParts.length >= 2) {
-                let date = dtParts[0].trim();
-                let time = dtParts[1].trim();
-
-                // Calibrate if the punch is arriving in real-time but the device hardware clock is lagging by 30 mins
-                // (e.g. device firmware timezone set to GMT+5.0 instead of GMT+5.5)
-                try {
-                    const todayIST = getISTDate();
-                    const nowISTParts = getISTDateTimeStr().split(' ');
-                    const curTimeIST = nowISTParts[1];
-
-                    // Check if date is today and timestamp is 25-35 minutes behind real time IST
-                    if (date === todayIST && curTimeIST) {
-                        const [pH, pM, pS] = time.split(':').map(Number);
-                        const [cH, cM, cS] = curTimeIST.split(':').map(Number);
-                        const pSecs = pH * 3600 + pM * 60 + (pS || 0);
-                        const cSecs = cH * 3600 + cM * 60 + (cS || 0);
-                        const diffSecs = cSecs - pSecs;
-
-                        if (diffSecs >= 25 * 60 && diffSecs <= 35 * 60) {
-                            const calibMs = new Date(`${date}T${time}+05:30`).getTime() + 30 * 60 * 1000;
-                            const calibDateObj = new Date(calibMs);
-                            const calibParts = new Intl.DateTimeFormat('en-CA', {
-                                timeZone: 'Asia/Kolkata',
-                                year: 'numeric',
-                                month: '2-digit',
-                                day: '2-digit',
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit',
-                                hour12: false
-                            }).format(calibDateObj).replace(/,/g, '').split(' ');
-                            console.log(`[ADMS] Auto-calibrated punch for emp ${empId} (SN: ${sn}) from ${date} ${time} to ${calibParts[0]} ${calibParts[1]} (IST +30m clock drift correction)`);
-                            date = calibParts[0];
-                            time = calibParts[1];
-                            punchTime = `${date} ${time}`;
-                        }
-                    }
-                } catch (calibErr) {
-                    console.warn('[ADMS] Auto-calibration check notice:', calibErr.message);
-                }
-
-                punches.push({
-                    emp_id: empId,
-                    punch_time: punchTime,
-                    date,
-                    time,
-                    verify_type: verifyType,
-                    punch_state: punchState,
-                    work_code: workCode
+                parsedEntries.push({
+                    empId,
+                    date: dtParts[0].trim(),
+                    time: dtParts[1].trim(),
+                    verifyType,
+                    punchState,
+                    workCode
                 });
             }
         }
     }
 
-    return punches;
+    const offsetMins = Number(clockOffsetMinutes) || 0;
+    const FUTURE_TOLERANCE_MS = 3 * 60 * 1000;
+    const REALTIME_TOLERANCE_MS = 5 * 60 * 1000;
+
+    let shouldResetOffset = false;
+    let applyDeviceOffset = offsetMins > 0;
+
+    if (applyDeviceOffset && parsedEntries.length > 0) {
+        for (const entry of parsedEntries) {
+            const punchMs = new Date(`${entry.date}T${entry.time}+05:30`).getTime();
+            if (Number.isNaN(punchMs)) continue;
+            if (punchMs + offsetMins * 60 * 1000 > nowMs + FUTURE_TOLERANCE_MS) {
+                // Shifting would land in the future, so this device is already reporting IST
+                applyDeviceOffset = false;
+                if (Math.abs(nowMs - punchMs) <= REALTIME_TOLERANCE_MS) {
+                    shouldResetOffset = true;
+                }
+                break;
+            }
+        }
+    }
+
+    const todayIST = getISTDate(new Date(nowMs));
+    const punches = parsedEntries.map((entry) => {
+        let { date, time } = entry;
+        let punchTime = `${date} ${time}`;
+
+        try {
+            const punchMs = new Date(`${date}T${time}+05:30`).getTime();
+            if (!Number.isNaN(punchMs)) {
+                if (applyDeviceOffset) {
+                    const shifted = shiftISTDateTime(date, time, offsetMins);
+                    console.log(`[ADMS] Applied +${offsetMins}m device offset for emp ${entry.empId} (SN: ${sn}): ${punchTime} -> ${shifted.punchTime}`);
+                    date = shifted.date;
+                    time = shifted.time;
+                    punchTime = shifted.punchTime;
+                } else if (offsetMins === 0 && parsedEntries.length <= 3 && date === todayIST) {
+                    // Fallback for untracked devices pushing real-time punches 25-35 mins behind IST
+                    const diffMs = nowMs - punchMs;
+                    if (diffMs >= 25 * 60 * 1000 && diffMs <= 35 * 60 * 1000) {
+                        const shifted = shiftISTDateTime(date, time, 30);
+                        console.log(`[ADMS] Auto-calibrated punch for emp ${entry.empId} (SN: ${sn}) from ${punchTime} to ${shifted.punchTime} (IST +30m clock drift correction)`);
+                        date = shifted.date;
+                        time = shifted.time;
+                        punchTime = shifted.punchTime;
+                    }
+                }
+            }
+        } catch (calibErr) {
+            console.warn('[ADMS] Auto-calibration check notice:', calibErr.message);
+        }
+
+        return {
+            emp_id: entry.empId,
+            punch_time: punchTime,
+            date,
+            time,
+            verify_type: entry.verifyType,
+            punch_state: entry.punchState,
+            work_code: entry.workCode
+        };
+    });
+
+    return { punches, shouldResetOffset };
+};
+
+const parseAttlogPayload = (rawBody, sn = 'UNKNOWN', clockOffsetMinutes = 0) => {
+    return parseAndCalibrateAttlog(rawBody, sn, clockOffsetMinutes).punches;
 };
 
 /**
@@ -451,7 +499,7 @@ exports.handleCDataGet = async (req, res) => {
     const options = req.query.options || '';
 
     // Auto-register/verify device
-    await getOrCreateDevice(sn);
+    const device = await getOrCreateDevice(sn);
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
@@ -459,7 +507,7 @@ exports.handleCDataGet = async (req, res) => {
         // Full ADMS handshake options configuration
         const istStr = getISTDateTimeStr();
 
-        const configResponse = [
+        const configLines = [
             `GET OPTION FROM: ${sn}`,
             `Stamp=9999`,
             `OpStamp=9999`,
@@ -469,16 +517,24 @@ exports.handleCDataGet = async (req, res) => {
             `TransTimes=00:00;14:05`,
             `TransInterval=1`,
             `TransFlag=1111000000`,
-            `TimeZone=5.5`,
-            `ServerTZ=5.5`,
+        ];
+
+        // Devices with clock_offset_minutes > 0 truncate TimeZone=5.5 to 5; omit TZ override for them
+        if (!(device.clock_offset_minutes > 0)) {
+            configLines.push(`TimeZone=5.5`, `ServerTZ=5.5`);
+        }
+
+        configLines.push(
             `DateTime=${istStr}`,
             `Realtime=1`,
             `SyncTime=1`,
             `ServerVer=3.4.1`,
             ``
-        ].join('\r\n');
+        );
 
-        console.log(`[ADMS] Handshake options sent to device SN: ${sn} (IST DateTime=${istStr}, TimeZone=5.5)`);
+        const configResponse = configLines.join('\r\n');
+
+        console.log(`[ADMS] Handshake options sent to device SN: ${sn} (IST DateTime=${istStr}, Offset=${device.clock_offset_minutes || 0}m)`);
         return res.status(200).send(configResponse);
     }
 
@@ -511,7 +567,18 @@ exports.handleCDataPost = async (req, res) => {
         rawBody = JSON.stringify(rawBody);
     }
 
-    const punches = parseAttlogPayload(rawBody, sn);
+    const { punches, shouldResetOffset } = parseAndCalibrateAttlog(
+        rawBody,
+        sn,
+        device.clock_offset_minutes || 0
+    );
+
+    if (shouldResetOffset) {
+        console.log(`[ADMS] Device ${sn} (${device.name}) now reports accurate IST; resetting clock_offset_minutes to 0.`);
+        Device.setClockOffset(sn, 0).catch(err =>
+            console.warn('[ADMS] Failed to reset device clock offset:', err.message)
+        );
+    }
 
     if (punches.length === 0) {
         return res.status(200).send('OK');
@@ -555,10 +622,15 @@ exports.handleGetRequest = async (req, res) => {
     const now = Date.now();
     if (now - lastCmdTime > 15 * 60 * 1000) { // Sync device clock every 15 minutes
         syncedDevices.set(sn, now);
+        const device = await getOrCreateDevice(sn);
         const istStr = getISTDateTimeStr();
         const cmdId1 = Math.floor(now / 1000);
         const cmdId2 = cmdId1 + 1;
         const cmdId3 = cmdId1 + 2;
+        if (device.clock_offset_minutes > 0) {
+            console.log(`[ADMS] Syncing device ${sn} clock DateTime=${istStr} (keeping server-side +${device.clock_offset_minutes}m calibration)...`);
+            return res.status(200).send(`C:${cmdId1}:SET OPTIONS DateTime=${istStr}\r\nC:${cmdId3}:CHECK`);
+        }
         console.log(`[ADMS] Syncing device ${sn} clock to IST (${istStr}) with CmdIDs ${cmdId1}, ${cmdId2}, ${cmdId3}...`);
         return res.status(200).send(`C:${cmdId1}:SET OPTIONS DateTime=${istStr}\r\nC:${cmdId2}:SET OPTIONS TimeZone=5.5\r\nC:${cmdId3}:CHECK`);
     }
@@ -586,3 +658,6 @@ exports.handleRegistry = async (req, res) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     return res.status(200).send('OK');
 };
+
+exports.parseAndCalibrateAttlog = parseAndCalibrateAttlog;
+exports.parseAttlogPayload = parseAttlogPayload;
